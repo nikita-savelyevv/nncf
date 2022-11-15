@@ -23,6 +23,10 @@ from nncf.common.schedulers import StubCompressionScheduler
 from nncf.common.utils.logger import logger as nncf_logger
 
 
+# TODO: add type hints
+# TODO: change .format() to f-strings
+# TODO: replace os.path with pathlib
+
 class TFAccuracyAwareTrainingRunner(BaseAccuracyAwareTrainingRunner):
     """
     The Training Runner implementation for TensorFlow training code.
@@ -50,6 +54,7 @@ class TFAccuracyAwareTrainingRunner(BaseAccuracyAwareTrainingRunner):
 
         for optimizer in optimizers:
             scheduler = optimizer.learning_rate
+            # TODO: extend for other schedulers
             if isinstance(scheduler, tf.Variable):
                 scheduler = scheduler * self.base_lr_reduction_factor_during_search
                 optimizer.learning_rate = scheduler
@@ -103,6 +108,9 @@ class TFAdaptiveCompressionLevelTrainingRunner(BaseAdaptiveCompressionLevelTrain
 
     def dump_checkpoint(self, model, compression_controller):
         # a workaround because for tensorflow backend disabling compression scheduler does not work properly
+        # TODO: implement a proper scheduler disabling, without replacement of scheduler
+        #   the problem with TF is that UpdateMask callback triggers original pruning scheduler update step, which
+        #   references the compression controller updating its pruning level
         is_best_checkpoint = (self.best_val_metric_value == self.current_val_metric_value and
                               isinstance(compression_controller.scheduler, StubCompressionScheduler))
         if not self.dump_checkpoints and not is_best_checkpoint:

@@ -1,0 +1,60 @@
+{
+    "model": "MobileNetV2",
+    "pretrained": false,
+    "batch_size": 512,
+    "input_info": {
+        "sample_size": [
+            1,
+            32,
+            32,
+            3
+        ]
+    },
+    "optimizer": {
+        "type": "Adam",
+        "schedule_type": "piecewise_constant",
+        "schedule_params": {
+            "boundaries": [
+                2
+            ],
+            "values": [
+                1e-2,
+                1e-3
+            ]
+        }
+//        "schedule_type": "cosine",
+//        "schedule_params": {
+//            "base_lr": 1e-2
+//        },
+//        "schedule_type": "step",
+//        "schedule_params": {
+//            "base_lr": 1e-2
+//        },
+//        "schedule_type": "exponential",
+//        "schedule_params": {
+//            "base_lr": 1e-2
+//        }
+    },
+    "dataset": "cifar10",
+    "dataset_type": "tfds",
+    "num_classes": 10,
+    "accuracy_aware_training": {
+        "mode": "adaptive_compression_level",
+        "params": {
+            "maximal_relative_accuracy_degradation": 1.0,
+            "initial_training_phase_epochs": 2,
+            "patience_epochs": 2,
+            "maximal_total_epochs": 50
+        }
+    },
+    "compression": {
+        "algorithm": "filter_pruning",
+        "pruning_init": 0.1,
+        "params": {
+            "schedule": "exponential",
+            "pruning_target": 0.4,
+            "pruning_steps": 2,
+            "filter_importance": "geometric_median"
+        }
+    }
+}

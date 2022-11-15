@@ -131,6 +131,7 @@ class TrainingRunner(ABC):
         set the obtained value to the `minimal_tolerable_accuracy` attribute of the TrainingRunner.
         """
 
+    # TODO: use typing_extensions.Protocol to define signature of *_fns with specified keyword arguments
     @abstractmethod
     def initialize_training_loop_fns(self, train_epoch_fn: Callable[[CompressionAlgorithmController, TModel,
                                                                      Optional[int],
@@ -171,6 +172,12 @@ class TrainingRunner(ABC):
         param model: The model object in which the state will be loaded.
         """
 
+
+# TODO: add type hints
+# TODO: condition logging messages on self.verbose
+# TODO: check tensorboard logs
+# TODO: change .format() to f-strings
+# TODO: replace os.path with pathlib
 
 class BaseAccuracyAwareTrainingRunner(TrainingRunner):
     """
@@ -220,6 +227,7 @@ class BaseAccuracyAwareTrainingRunner(TrainingRunner):
     def train_epoch(self, model, compression_controller):
         compression_controller.scheduler.epoch_step()
         # assuming that epoch number is only used for logging in train_fn:
+        # TODO: fix type hint for *_fns so that argument names are specified
         self._train_epoch_fn(compression_controller,
                              model,
                              epoch=self.cumulative_epoch_count,
@@ -415,6 +423,7 @@ class BaseAdaptiveCompressionLevelTrainingRunner(BaseAccuracyAwareTrainingRunner
                 best_checkpoint_compression_rate = checkpoint_rate
                 break
         if best_checkpoint_compression_rate is None:
+            # TODO: resolve this hack by making best model save even if it is not fully compressed
             nncf_logger.warning('Could not load the model')
             return
 
@@ -449,6 +458,7 @@ class BaseAdaptiveCompressionLevelTrainingRunner(BaseAccuracyAwareTrainingRunner
 
     @property
     def compressed_training_history(self):
+        # TODO: there may be multiple entries for the single compression rate, thus this is not totally correct
         return dict(self._compressed_training_history)
 
     def get_compression_rates_with_positive_acc_budget(self) -> List[float]:
