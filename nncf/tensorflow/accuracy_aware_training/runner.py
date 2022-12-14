@@ -22,6 +22,10 @@ from nncf.common.accuracy_aware_training.runner import BaseAdaptiveCompressionLe
 from nncf.common.logging import nncf_logger
 
 
+# TODO: add type hints
+# TODO: change .format() to f-strings
+# TODO: replace os.path with pathlib
+
 class TFAccuracyAwareTrainingRunner(BaseAccuracyAwareTrainingRunner):
     """
     The Training Runner implementation for TensorFlow training code.
@@ -49,6 +53,7 @@ class TFAccuracyAwareTrainingRunner(BaseAccuracyAwareTrainingRunner):
 
         for optimizer in optimizers:
             scheduler = optimizer.learning_rate
+            # TODO: extend for other schedulers
             if isinstance(scheduler, tf.Variable):
                 scheduler = scheduler * self.base_lr_reduction_factor_during_search
                 optimizer.learning_rate = scheduler

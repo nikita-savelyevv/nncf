@@ -30,6 +30,10 @@ except ImportError:
     TENSORBOARD_AVAILABLE = False
 
 
+# TODO: add type hints
+# TODO: check tensorboard logs
+# TODO: change .format() to f-strings
+
 class PTAccuracyAwareTrainingRunner(BaseAccuracyAwareTrainingRunner):
     """
     BaseAccuracyAwareTrainingRunner
@@ -54,7 +58,9 @@ class PTAccuracyAwareTrainingRunner(BaseAccuracyAwareTrainingRunner):
             raise RuntimeError('Original model does not contain the pre-calculated reference metric value')
 
     def validate(self, model):
+        # TODO: this method should only compute and return the accuracy on the validation dataset
         with torch.no_grad():
+            # TODO: fix type hint for *_fns so that argument names are specified
             self.current_val_metric_value = self._validate_fn(model, epoch=self.cumulative_epoch_count)
         is_best = (not self.is_higher_metric_better) != (self.current_val_metric_value > self.best_val_metric_value)
         if is_best:
@@ -73,6 +79,7 @@ class PTAccuracyAwareTrainingRunner(BaseAccuracyAwareTrainingRunner):
                                           self.current_val_metric_value,
                                           self.current_loss)
         else:
+            # FIXME:"The epoch parameter in `scheduler.step()` was not necessary and is being deprecated where possible"
             if self.lr_scheduler is not None and self.lr_updates_needed:
                 self.lr_scheduler.step(
                     self.training_epoch_count if not isinstance(self.lr_scheduler, ReduceLROnPlateau)
@@ -101,6 +108,8 @@ class PTAccuracyAwareTrainingRunner(BaseAccuracyAwareTrainingRunner):
 
         self.training_epoch_count = 0
         self.best_val_metric_value = 0
+        # TODO: introducing a differentiation by compression rates for best val metric instead of zeroing it out will
+        #   make an algorithm more flexible
         self.current_val_metric_value = 0
 
     def dump_checkpoint(self, model, compression_controller):

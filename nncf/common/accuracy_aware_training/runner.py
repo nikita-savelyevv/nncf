@@ -131,6 +131,7 @@ class TrainingRunner(ABC):
         set the obtained value to the `minimal_tolerable_accuracy` attribute of the TrainingRunner.
         """
 
+    # TODO: use typing_extensions.Protocol to define signature of *_fns with specified keyword arguments
     @abstractmethod
     def initialize_training_loop_fns(self, train_epoch_fn: Callable[[CompressionAlgorithmController, TModel,
                                                                      Optional[int],
@@ -182,6 +183,12 @@ class TrainingRunner(ABC):
         """
 
 
+# TODO: add type hints
+# TODO: condition logging messages on self.verbose
+# TODO: check tensorboard logs
+# TODO: change .format() to f-strings
+# TODO: replace os.path with pathlib
+
 class BaseAccuracyAwareTrainingRunner(TrainingRunner):
     """
     The base accuracy-aware training Runner object,
@@ -231,6 +238,7 @@ class BaseAccuracyAwareTrainingRunner(TrainingRunner):
     def train_epoch(self, model, compression_controller):
         compression_controller.scheduler.epoch_step()
         # assuming that epoch number is only used for logging in train_fn:
+        # TODO: fix type hint for *_fns so that argument names are specified
         self.current_loss = self._train_epoch_fn(compression_controller,
                                                  model,
                                                  epoch=self.cumulative_epoch_count,
@@ -451,6 +459,7 @@ class BaseAdaptiveCompressionLevelTrainingRunner(BaseAccuracyAwareTrainingRunner
     def update_training_history(self, compression_rate, metric_value):
         accuracy_budget = metric_value - self.minimal_tolerable_accuracy
         self._compressed_training_history.append((compression_rate, accuracy_budget))
+        nncf_logger.info(f'Compression history entry: {compression_rate:.4f} {accuracy_budget:.4f}')
 
         if IMG_PACKAGES_AVAILABLE:
             plt.figure()
@@ -465,6 +474,7 @@ class BaseAdaptiveCompressionLevelTrainingRunner(BaseAccuracyAwareTrainingRunner
 
     @property
     def compressed_training_history(self):
+        # TODO: there may be multiple entries for the single compression rate, thus this is not totally correct
         return dict(self._compressed_training_history)
 
     def get_compression_rates_with_positive_acc_budget(self) -> List[float]:
