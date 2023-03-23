@@ -247,6 +247,8 @@ class PruningOperationsMetatypeRegistry(Registry):
         return wrap
 
     def get_operator_metatype_by_op_name(self, op_name: str):
+        # if op_name == 'pad':
+        #     return self._registry_dict['identity_mask_propagation']
         if op_name in self._op_name_to_op_class:
             return self._op_name_to_op_class[op_name]
         return None

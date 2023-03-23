@@ -166,6 +166,7 @@ class TracingContext:
                        tensor_metas: List[Optional[TensorMeta]],
                        op_address: OperationAddress,
                        module_attrs: BaseLayerAttributes = None,
+                       operation_args: dict = None,
                        ignored_algorithms: List[str] = None,
                        is_called_inside_nncf_module: bool = False) -> Optional[DynamicGraphNode]:
         if not self._may_add_nodes:
@@ -181,6 +182,7 @@ class TracingContext:
                 node = self.graph.add_node(
                     op_address, tensor_metas, self._input_comparators_per_scope, inputs,
                     DynamicGraphNodeParameters(module_attrs,
+                                               operation_args,
                                                ignored_algorithms,
                                                is_called_inside_nncf_module,
                                                calling_module_id=mid))

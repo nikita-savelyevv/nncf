@@ -31,6 +31,7 @@ from nncf.common.pruning.operations import InputPruningOp
 from nncf.common.pruning.operations import LayerNormPruningOp
 from nncf.common.pruning.operations import LinearPruningOp
 from nncf.common.pruning.operations import OutputPruningOp
+from nncf.common.pruning.operations import PadPruningOp
 from nncf.common.pruning.operations import ReshapePruningOp
 from nncf.common.pruning.operations import SplitPruningOp
 from nncf.common.pruning.operations import StopMaskForwardPruningOp
@@ -71,6 +72,7 @@ from nncf.torch.graph.operator_metatypes import PTMinMetatype
 from nncf.torch.graph.operator_metatypes import PTMulMetatype
 from nncf.torch.graph.operator_metatypes import PTNoopMetatype
 from nncf.torch.graph.operator_metatypes import PTOutputNoopMetatype
+from nncf.torch.graph.operator_metatypes import PTPadMetatype
 from nncf.torch.graph.operator_metatypes import PTPowerMetatype
 from nncf.torch.graph.operator_metatypes import PTPRELUMetatype
 from nncf.torch.graph.operator_metatypes import PTRELU6Metatype
@@ -621,6 +623,11 @@ class PTReshape(ReshapePruningOp, PTPruner):
 @PT_PRUNING_OPERATOR_METATYPES.register("concat")
 class PTConcatPruningOp(ConcatPruningOp, PTPruner):
     subtypes = [PTCatMetatype]
+
+
+@PT_PRUNING_OPERATOR_METATYPES.register("pad")
+class PTPadPruningOp(PadPruningOp, PTPruner):
+    subtypes = [PTPadMetatype]
 
 
 @PT_PRUNING_OPERATOR_METATYPES.register("chunk")

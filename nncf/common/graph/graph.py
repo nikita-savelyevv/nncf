@@ -71,6 +71,14 @@ class NNCFNode:
         self.data[NNCFGraph.LAYER_ATTRIBUTES] = data
 
     @property
+    def operation_args(self) -> BaseLayerAttributes:
+        return self.data.get(NNCFGraph.OPERATION_ARGS)
+
+    @operation_args.setter
+    def operation_args(self, data: Any) -> None:
+        self.data[NNCFGraph.OPERATION_ARGS] = data
+
+    @property
     def ignored_algorithms(self) -> List[str]:
         return self.data.get(NNCFGraph.IGNORED_ALGOS_ATTR, [])
 
@@ -162,6 +170,7 @@ class NNCFGraph:
     METATYPE_ATTR = 'metatype'
     LAYER_NAME_ATTR = 'layer_name'
     LAYER_ATTRIBUTES = 'layer_attributes'
+    OPERATION_ARGS = 'operation_args'
     ACTIVATION_SHAPE_EDGE_ATTR = 'activation_shape'
     INPUT_PORT_ID_EDGE_ATTR = 'input_port_id'
     OUTPUT_PORT_ID_EDGE_ATTR = 'output_port_id'

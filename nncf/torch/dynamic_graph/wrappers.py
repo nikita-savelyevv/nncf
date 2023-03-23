@@ -11,6 +11,7 @@
  limitations under the License.
 """
 import functools
+import inspect
 from copy import deepcopy
 from typing import Callable
 from typing import List
@@ -60,6 +61,7 @@ def ignore_scope(cls):
 
 
 OP_NAMES_REQUIRING_MODULE_ATTRS = [v.op_func_name for v in NNCF_MODULES_DICT]
+OP_NAMES_REQUIRING_OPERATION_ARGS = ["pad"]
 
 
 def wrap_operator(operator, operator_info: 'PatchedOperatorInfo'):
@@ -192,9 +194,10 @@ def _execute_op(op_address: 'OperationAddress',
         node = ctx.find_operator_node(tensor_metas, op_address)
         if node is None:
             layer_attrs, ignored_algos = _collect_module_attrs_and_ignored_algorithms(ctx, op_name)
+            operation_args = _collect_operation_args(op_name, args, kwargs)
             is_called_inside_nncf_module = isinstance(ctx.get_current_module(), _NNCFModuleMixin)
             node = ctx.maybe_add_node(processed_input, tensor_metas, op_address,
-                                      layer_attrs, ignored_algos, is_called_inside_nncf_module)
+                                      layer_attrs, operation_args, ignored_algos, is_called_inside_nncf_module)
         if is_debug() and node is not None:
             ctx.register_node_call(node)
 
@@ -221,6 +224,14 @@ def _collect_module_attrs_and_ignored_algorithms(ctx: TracingContext,
         if isinstance(curr_module, _NNCFModuleMixin):
             ignored_algos = deepcopy(curr_module.ignored_algorithms)
     return layer_attrs, ignored_algos
+
+
+def _collect_operation_args(op_name, args, kwargs):
+    from nncf.common.graph.layer_attributes import PadOperationArguments
+    operation_args = None
+    if op_name in OP_NAMES_REQUIRING_OPERATION_ARGS:
+        operation_args = PadOperationArguments(*args, **kwargs)
+    return operation_args
 
 
 def _get_layer_attributes(module: TorchModule, operator_name: str) -> BaseLayerAttributes:

@@ -209,3 +209,13 @@ class ReshapeLayerAttributes(BaseLayerAttributes):
                  output_shape: List[int]):
         self.input_shape = input_shape
         self.output_shape = output_shape
+
+
+class BaseOperationArguments(ABC):
+    pass
+
+
+class PadOperationArguments(BaseOperationArguments):
+    def __init__(self, input, pad, mode="constant", value=0):
+        self.mode = mode
+        self.value = value

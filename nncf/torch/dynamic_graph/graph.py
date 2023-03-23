@@ -165,10 +165,12 @@ class OperationExecutionContext:
 
 class DynamicGraphNodeParameters:
     def __init__(self, layer_attributes: BaseLayerAttributes,
+                 operation_args: dict,
                  ignored_algorithms: List[str],
                  is_called_inside_nncf_module: bool,
                  calling_module_id: int):
         self.layer_attributes = layer_attributes
+        self.operation_args = operation_args
         self.ignored_algorithms = ignored_algorithms
         self.is_called_inside_nncf_module = is_called_inside_nncf_module
         self.calling_module_id = calling_module_id
@@ -176,12 +178,14 @@ class DynamicGraphNodeParameters:
 
 class DynamicGraphNode:
     def __init__(self, node_id: int, node_key: str, layer_attributes: BaseLayerAttributes,
+                 operation_args,
                  op_exec_context: OperationExecutionContext, calling_module_id: int,
                  ignored_algorithms: List[str],
                  is_called_inside_nncf_module: bool, is_in_iteration_scope: bool):
         self.node_id = node_id
         self.node_key = node_key
         self.layer_attributes = layer_attributes
+        self.operation_args = operation_args
         self.op_exec_context = op_exec_context
         self.calling_module_id = calling_module_id
         self.ignored_algorithms = ignored_algorithms
@@ -193,6 +197,7 @@ class DynamicGraphNode:
         return cls(node_id=nx_node[DynamicGraph.ID_NODE_ATTR],
                    node_key=nx_node[DynamicGraph.KEY_NODE_ATTR],
                    layer_attributes=nx_node.get(DynamicGraph.LAYER_ATTRIBUTES),
+                   operation_args=nx_node.get(DynamicGraph.OPERATION_ARGS),
                    op_exec_context=nx_node[DynamicGraph.OP_EXEC_CONTEXT_NODE_ATTR],
                    ignored_algorithms=nx_node[DynamicGraph.IGNORED_ALGOS_NODE_ATTR],
                    is_called_inside_nncf_module=nx_node[DynamicGraph.IS_CALLED_INSIDE_NNCF_MODULE],
@@ -289,6 +294,8 @@ class DefaultScopeNodeMatcher:
         }
         if node_parameters.layer_attributes is not None:
             attrs[DynamicGraph.LAYER_ATTRIBUTES] = node_parameters.layer_attributes
+        if node_parameters.operation_args is not None:
+            attrs[DynamicGraph.OPERATION_ARGS] = node_parameters.operation_args
 
         if node_parameters.ignored_algorithms is not None:
             attrs[DynamicGraph.IGNORED_ALGOS_NODE_ATTR] = node_parameters.ignored_algorithms
@@ -524,6 +531,7 @@ class DynamicGraph:
     ID_NODE_ATTR = 'id'
     KEY_NODE_ATTR = 'key'
     LAYER_ATTRIBUTES = 'layer_attributes'
+    OPERATION_ARGS = 'operation_args'
     OP_EXEC_CONTEXT_NODE_ATTR = 'op_exec_context'
     ACTIVATION_SHAPE_EDGE_ATTR = 'activation_shape'
     ACTIVATION_DTYPE_EDGE_ATTR = 'activation_dtype'
