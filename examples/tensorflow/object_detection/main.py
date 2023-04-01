@@ -58,6 +58,7 @@ def get_argument_parser():
                         default=None,
                         type=str,
                         help='Path to backbone checkpoint.')
+    parser.add_argument('--resave', action='store_true')
 
     return parser
 
@@ -404,10 +405,23 @@ def export(config):
 
     compression_ctrl, compress_model = create_compressed_model(model, config.nncf_config, compression_state)
 
+    if config.resave:
+        scheduler = build_scheduler(config=config, steps_per_epoch=0)
+        optimizer = build_optimizer(config=config, scheduler=scheduler, legacy=True)
+        compress_model.compile(optimizer=optimizer)
+
     if config.ckpt_path:
         checkpoint = tf.train.Checkpoint(model=compress_model,
                                          compression_state=TFCompressionState(compression_ctrl))
         load_checkpoint(checkpoint, config.ckpt_path)
+
+    if config.resave:
+        scheduler = build_scheduler(config=config, steps_per_epoch=0)
+        new_optimizer = build_optimizer(config, scheduler, legacy=False)
+        compress_model.compile(optimizer=new_optimizer)
+        checkpoint.save(config.ckpt_path.replace('/tensorflow/', '/resaved/') + '/ckpt')
+        print('Resaved')
+        return
 
     save_path, save_format = get_saving_parameters(config)
     export_model(compression_ctrl.prepare_for_inference(), save_path, save_format)
