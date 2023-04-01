@@ -17,7 +17,7 @@ import tensorflow_addons as tfa
 from examples.tensorflow.common.logger import logger
 
 
-def build_optimizer(config, scheduler):
+def build_optimizer(config, scheduler, legacy=False):
     optimizer_config = config.get('optimizer', {})
 
     optimizer_type = optimizer_config.get('type', 'adam').lower()
@@ -40,16 +40,26 @@ def build_optimizer(config, scheduler):
             optimizer = tfa.optimizers.SGDW(**common_params,
                                             weight_decay=weight_decay)
         else:
-            optimizer = tf.keras.optimizers.SGD(**common_params)
+            if legacy:
+                optimizer = tf.keras.optimizers.legacy.SGD(**common_params)
+            else:
+                optimizer = tf.keras.optimizers.SGD(**common_params)
     elif optimizer_type == 'rmsprop':
         logger.info('Using RMSProp optimizer')
         rho = optimizer_params.get('rho', 0.9)
         momentum = optimizer_params.get('momentum', 0.9)
         epsilon = optimizer_params.get('epsilon', 1e-07)
-        optimizer = tf.keras.optimizers.RMSprop(learning_rate=scheduler,
-                                                rho=rho,
-                                                momentum=momentum,
-                                                epsilon=epsilon)
+        if legacy:
+            optimizer = tf.keras.optimizers.legacy.RMSprop(learning_rate=scheduler,
+                                                           rho=rho,
+                                                           momentum=momentum,
+                                                           epsilon=epsilon)
+        else:
+
+            optimizer = tf.keras.optimizers.RMSprop(learning_rate=scheduler,
+                                                    rho=rho,
+                                                    momentum=momentum,
+                                                    epsilon=epsilon)
     elif optimizer_type in ['adam', 'adamw']:
         printable_names = {'adam': 'Adam', 'adamw': 'AdamW'}
         logger.info('Using %s optimizer', printable_names[optimizer_type])
@@ -68,7 +78,10 @@ def build_optimizer(config, scheduler):
             optimizer = tfa.optimizers.AdamW(**common_params,
                                              weight_decay=weight_decay)
         else:
-            optimizer = tf.keras.optimizers.Adam(**common_params)
+            if legacy:
+                optimizer = tf.keras.optimizers.legacy.Adam(**common_params)
+            else:
+                optimizer = tf.keras.optimizers.Adam(**common_params)
     else:
         raise ValueError('Unknown optimizer %s' % optimizer_type)
 

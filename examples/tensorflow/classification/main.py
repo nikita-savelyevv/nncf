@@ -67,6 +67,7 @@ def get_argument_parser():
         help="Use pretrained models from the tf.keras.applications",
         action="store_true",
     )
+    parser.add_argument('--resave', action='store_true')
     return parser
 
 
@@ -317,8 +318,13 @@ def export(config):
     ]
     loss_obj = tf.keras.losses.CategoricalCrossentropy(label_smoothing=0.1)
 
-    compress_model.compile(loss=loss_obj,
-                           metrics=metrics)
+    if config.resave:
+        scheduler = build_scheduler(config=config, steps_per_epoch=0)
+        optimizer = build_optimizer(config=config, scheduler=scheduler, legacy=True)
+        compress_model.compile(loss=loss_obj, metrics=metrics, optimizer=optimizer)
+    else:
+        compress_model.compile(loss=loss_obj,
+                               metrics=metrics)
     compress_model.summary()
 
     checkpoint = tf.train.Checkpoint(model=compress_model,
@@ -327,6 +333,12 @@ def export(config):
     if config.ckpt_path is not None:
         load_checkpoint(checkpoint=checkpoint,
                         ckpt_path=config.ckpt_path)
+    if config.resave:
+        new_optimizer = build_optimizer(config, scheduler, legacy=False)
+        compress_model.compile(optimizer=new_optimizer)
+        checkpoint.save(config.ckpt_path.replace('/tensorflow/', '/resaved/') + '/ckpt')
+        print('Resaved')
+        return
 
     save_path, save_format = get_saving_parameters(config)
     export_model(compression_ctrl.prepare_for_inference(), save_path, save_format)
