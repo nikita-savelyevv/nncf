@@ -14,6 +14,7 @@ from tests.torch.helpers import BasicConvTestModel
 from tests.torch.helpers import create_compressed_model_and_algo_for_test
 from tests.torch.helpers import register_bn_adaptation_init_args
 from tests.torch.pytorch_patch_isolated import test_jit_if_tracing_script_source_equals
+from tests.torch.tmp import test_temp
 
 
 def test_get_all_aliases_is_valid():
@@ -68,6 +69,10 @@ def test_jit_if_tracing_script_patching(tmp_path):
 
     # ONNX export should work correctly because torch.jit.script_if_tracing is patched
     torch.onnx.export(TestModel(), (torch.zeros((1,)),), str(tmp_path / "jit_if_tracing_test_model.onnx"))
+
+
+def test_tmp():
+    run_pytest_case_function_in_separate_process(test_temp)
 
 
 def test_jit_if_tracing_script_source():
