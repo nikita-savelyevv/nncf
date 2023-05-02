@@ -143,6 +143,59 @@ def get_model_accuracy(model_fn, model_params, nncf_config, validation_dataset, 
         return 100 * results["acc@1"]
 
 
+def openvino_native_experiment(model, validation_dataset):
+    import openvino.runtime as ov
+    from nncf.experimental.openvino_native.quantization.quantize import quantize_impl
+    from nncf.common.quantization.structs import QuantizationPreset
+    from nncf.parameters import TargetDevice
+    from nncf import Dataset
+    import subprocess
+
+    class DatasetWrapper:
+        def __init__(self, tf_dataset):
+            self.tf_dataset = tf_dataset
+
+        def __iter__(self):
+            for data_batch, label_batch in self.tf_dataset:
+                for i in range(data_batch.shape[0]):
+                    yield data_batch[i][None], label_batch[i][None]
+
+        def __len__(self):
+            return 255 * len(self.tf_dataset)
+
+    save_dir = Path("./checkpoints/mobilenet_v3_small_imagenet_int8_original")
+    frozen_graph_path = save_dir / "frozen_graph.pb"
+    if not frozen_graph_path.exists():
+        export_model(model, frozen_graph_path, "frozen_graph")
+
+    # for simple commands
+    ir_dir = save_dir / "ir"
+    xml_path = ir_dir / "frozen_graph.xml"
+    if not xml_path.exists():
+        cmd_str = (
+            f"/home/nsavel/venvs/nncf_tf2111/bin/mo --framework tf --use_new_frontend --input_shape [1,224,224,3] "
+            f"--input_model {frozen_graph_path} --output_dir {ir_dir} --reverse_input_channels"
+        )
+        subprocess.run(cmd_str, shell=True)
+
+    ov_model = ov.Core().read_model(xml_path)
+    val_dataset = DatasetWrapper(validation_dataset)
+    calibration_dataset = Dataset(val_dataset, lambda it: it[0])
+    quantized_model = quantize_impl(
+        ov_model,
+        calibration_dataset,
+        preset=QuantizationPreset.MIXED,
+        target_device=TargetDevice.ANY,
+        subset_size=300,
+        fast_bias_correction=True,
+        model_type=None,
+        ignored_scope=None,
+        compress_weights=True,
+    )
+
+    ov.serialize(quantized_model, str(save_dir / "quantized_ir_mixed/openvino.xml"))
+
+
 def run(config):
     if config.disable_tensor_float_32_execution:
         tf.config.experimental.enable_tensor_float_32_execution(False)
@@ -163,6 +216,9 @@ def run(config):
 
     train_builder, validation_builder = get_dataset_builders(config, strategy.num_replicas_in_sync)
     train_dataset, validation_dataset = train_builder.build(), validation_builder.build()
+
+    openvino_native_experiment(model_fn(**model_params), validation_dataset)
+    exit(0)
 
     nncf_config = register_default_init_args(
         nncf_config=config.nncf_config, data_loader=train_dataset, batch_size=train_builder.global_batch_size
