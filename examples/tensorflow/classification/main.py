@@ -145,7 +145,7 @@ def get_model_accuracy(model_fn, model_params, nncf_config, validation_dataset, 
 
 def openvino_native_experiment(model, validation_dataset):
     import openvino.runtime as ov
-    from nncf.experimental.openvino_native.quantization.quantize import quantize_impl
+    from nncf.openvino.quantization.quantize_model import quantize_impl
     from nncf.common.quantization.structs import QuantizationPreset
     from nncf.parameters import TargetDevice
     from nncf import Dataset
