@@ -119,7 +119,7 @@ def insert_pre_compression_operations(module: nn.Module, use_fake_quantize=False
     assert level_high < 256
 
     for user_type in user_types:
-        if torch.nn.Embedding in user_type.__mro__:
+        if torch.nn.Embedding in user_type.__mro__ or torch.nn.Linear in user_type.__mro__:
             allowed_types.append(user_type)
 
     _insert_pre_compression_operations(module, allowed_types, use_fake_quantize, level_high)
