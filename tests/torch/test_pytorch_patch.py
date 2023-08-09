@@ -118,6 +118,8 @@ def test_jit_trace_model():
 
     compressed_model, compression_ctrl = create_compressed_model_and_algo_for_test(model, config)
     torch.jit.trace(compressed_model, example_inputs=torch.rand(model.INPUT_SIZE))
+    torch.jit.script(compressed_model, example_inputs=[torch.rand(model.INPUT_SIZE)])
 
     model = compression_ctrl.strip()
     torch.jit.trace(model, example_inputs=torch.rand(model.INPUT_SIZE))
+    torch.jit.script(model, example_inputs=[torch.rand(model.INPUT_SIZE)])
