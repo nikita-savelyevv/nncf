@@ -38,6 +38,9 @@ TTensor = TypeVar("TTensor")
 FAST_BIAS_CORRECTION_THRESHOLD = 2
 
 
+counter = 0
+
+
 class FastBiasCorrection(Algorithm):
     """
     Post-training FastBiasCorrection algorithm implementation.
@@ -86,7 +89,9 @@ class FastBiasCorrection(Algorithm):
         self.inplace_statistics = inplace_statistics
         self.backend_params = backend_params
         self._backend_entity = None
-        self._algorithm_key = f"FBC_{hash(self)}"
+        global counter
+        self._algorithm_key = f"FBC_{counter}"
+        counter += 1
 
         if self.apply_for_all_nodes:
             raise nncf.InternalError("FastBiasCorrection algorithm does not support apply_for_all_nodes=True yet")

@@ -37,6 +37,9 @@ STATISTIC_BRANCH_KEY = "abs_max"
 ALPHA_MAP = {"convolution": 0.05, "matmul": 0.95}
 
 
+counter = 0
+
+
 class SmoothQuant(Algorithm):
     """
     Post-training SmoothQuant algorithm implementation.
@@ -58,12 +61,14 @@ class SmoothQuant(Algorithm):
             The default value for each layer in the ALPHA_MAP.
             Negative value switches off the algorithm for correspondent nodes.
         """
-
+        global counter
         super().__init__()
         self._subset_size = subset_size
         self._inplace_statistics = inplace_statistics
         self._backend_entity = None
-        self._algorithm_key = f"SQ_{hash(self)}"
+        # self._algorithm_key = f"SQ_{hash(self)}"
+        self._algorithm_key = f"SQ_{counter}"
+        counter += 1
         self._cached_multiply_names = Counter()
         self._alpha_map = alpha_map
 

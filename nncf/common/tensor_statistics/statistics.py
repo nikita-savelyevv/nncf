@@ -36,9 +36,10 @@ class MinMaxTensorStatistic(TensorStatistic):
     MIN_STAT = "min_values"
     MAX_STAT = "max_values"
 
-    def __init__(self, min_values, max_values):
+    def __init__(self, min_values, max_values, no_op=None):
         self.min_values = min_values
         self.max_values = max_values
+        self.no_op = no_op
 
     def __eq__(self, other: "MinMaxTensorStatistic") -> bool:
         return self.tensor_eq(self.min_values, other.min_values) and self.tensor_eq(self.max_values, other.max_values)

@@ -24,6 +24,81 @@ from nncf.quantization.algorithms.algorithm import Algorithm
 TModel = TypeVar("TModel")
 PipelineStep = List[Algorithm]
 
+import pickle
+overwrite_statistics = bool(0)
+save_statistics_as_dict = bool(0)
+save_statistics_as_obj = bool(0)
+read_stats_file = f"ptq_stats/obj_reversed.pkl"
+write_stats_file = f"ptq_stats/{'obj' if save_statistics_as_obj else ''}_last.pkl"
+write_statistics = {}
+
+
+def process_algo_statistic_points(statistic_points, algo):
+    from nncf.quantization.algorithms.smooth_quant.algorithm import SmoothQuant
+    from nncf.quantization.algorithms.post_training.algorithm import PostTrainingQuantization
+    from nncf.openvino.statistics.statistics import OVMinMaxTensorStatistic, OVMeanTensorStatistic
+    from nncf.common.graph.transformations.commands import TargetType
+
+    if isinstance(algo, SmoothQuant):
+        algo_str = 'SQ'
+    elif isinstance(algo, PostTrainingQuantization):
+        algo_str = 'PTQ'
+    else:
+        raise Exception(f"Can't handle such algo: {type(algo)}")
+
+    if save_statistics_as_obj:
+        with open(write_stats_file.replace(".pkl", f"_{algo_str}.pkl"), 'wb') as f:
+            pickle.dump(statistic_points, f)
+
+    if overwrite_statistics:
+        with open(read_stats_file.replace(".pkl", f"_{algo_str}.pkl"), 'rb') as f:
+            read_statistic_points = pickle.load(f)
+        return read_statistic_points
+
+    if not save_statistics_as_dict:
+        return
+
+    for node_name, s_ps in statistic_points.items():
+        for s_p in s_ps:
+            for algo, collectors in s_p.algorithm_to_tensor_collectors.items():
+                algo_name = algo.split('_')[0]
+                for collector in collectors:
+                    statistics = collector.get_statistics()
+                    if node_name not in write_statistics:
+                        write_statistics[node_name] = {}
+                    if algo_name not in write_statistics[node_name]:
+                        write_statistics[node_name][algo_name] = {}
+                    if isinstance(statistics, dict):
+                        for stat_name in statistics.keys():
+                            if save_statistics_as_dict:
+                                assert stat_name not in write_statistics[node_name][algo_name]
+                                write_statistics[node_name][algo_name][stat_name] = statistics[stat_name]
+                    elif isinstance(statistics, OVMinMaxTensorStatistic):
+                        if save_statistics_as_dict:
+                            assert "min_values" not in write_statistics[node_name][algo_name]
+                            assert "max_values" not in write_statistics[node_name][algo_name]
+                            write_statistics[node_name][algo_name]["min_values"] = statistics.min_values
+                            write_statistics[node_name][algo_name]["max_values"] = statistics.max_values
+                            if hasattr(statistics, "no_op"):
+                                assert "no_op" not in write_statistics[node_name][algo_name]
+                                write_statistics[node_name][algo_name]["no_op"] = statistics.no_op
+                    elif isinstance(statistics, OVMeanTensorStatistic):
+                        if s_p.target_point.type == TargetType.PRE_LAYER_OPERATION:
+                            suffix = 'pre'
+                        elif s_p.target_point.type == TargetType.POST_LAYER_OPERATION:
+                            suffix = 'post'
+                        else:
+                            raise Exception(f"Can't handle such target point type: {s_p.target_point.type}")
+                        mean_name = f"mean_values_{suffix}"
+                        shape_name = f"shape_values_{suffix}"
+                        if save_statistics_as_dict:
+                            assert mean_name not in write_statistics[node_name][algo_name]
+                            assert shape_name not in write_statistics[node_name][algo_name]
+                            write_statistics[node_name][algo_name][mean_name] = statistics.mean_values
+                            write_statistics[node_name][algo_name][shape_name] = statistics.shape
+                    else:
+                        raise Exception(f"Can't handle such statistics type: {type(statistics)}")
+
 
 def collect_statistics(
     containers: Union[StatisticPointsContainer, List[StatisticPointsContainer]],
@@ -185,6 +260,16 @@ class Pipeline:
             for statistic_points in algorithm.get_statistic_points(model, graph).values():
                 for statistic_point in statistic_points:
                     container.add_statistic_point(statistic_point)
+
+        new_container = process_algo_statistic_points(container, self.pipeline_steps[step_index])
+        if new_container is not None:
+            container = new_container
+
+        if step_index == len(self.pipeline_steps) - 1:
+            if save_statistics_as_dict:
+                print(f"Saving statistics to {write_stats_file}")
+                with open(write_stats_file, 'wb') as f:
+                    pickle.dump(write_statistics, f)
 
         return container
 

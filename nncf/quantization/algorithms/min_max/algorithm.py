@@ -90,6 +90,9 @@ def _filter_target_points_by_metatypes(
     return output
 
 
+counter = 0
+
+
 class MinMaxQuantization(Algorithm):
     """
     Post-training MinMaxQuantization algorithm.
@@ -189,7 +192,10 @@ class MinMaxQuantization(Algorithm):
             )
 
         self._reset_cache()
-        self._algorithm_key = f"MMQ_{hash(self)}"
+        # self._algorithm_key = f"MMQ_{hash(self)}"
+        global counter
+        self._algorithm_key = f"MMQ_{counter}"
+        counter += 1
 
     def _review_defaults_based_on_mode(self):
         """
