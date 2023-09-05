@@ -20,6 +20,14 @@ except ImportError:
 
 
 @pytest.fixture(scope="session", autouse=True)
+def set_memory_growth():
+    if tf:
+        physical_devices = tf.config.list_physical_devices('GPU')
+        for gpu in physical_devices:
+            tf.config.experimental.set_memory_growth(gpu, True)
+
+
+@pytest.fixture(scope="session", autouse=True)
 def disable_tf32_precision():
     if tf:
         tf.config.experimental.enable_tensor_float_32_execution(False)

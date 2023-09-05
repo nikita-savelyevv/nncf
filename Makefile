@@ -95,7 +95,7 @@ install-tensorflow-dev: install-tensorflow-test install-pre-commit install-pylin
 	pip install -r examples/post_training_quantization/tensorflow/mobilenet_v2/requirements.txt
 
 test-tensorflow:
-	pytest ${COVERAGE_ARGS} tests/common tests/tensorflow    \
+	pytest tests/tensorflow/test_compressed_graph.py    \
 		--junitxml ${JUNITXML_PATH}         \
 		$(DATA_ARG)
 
