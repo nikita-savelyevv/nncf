@@ -130,8 +130,29 @@ def transform_fn(data_item):
 # item and prepare model input data. The quantize method uses a small subset
 # (default: 300 samples) of the calibration dataset.
 
-calibration_dataset = nncf.Dataset(val_data_loader, transform_fn)
+class Loader:
+    def __init__(self, dataloader):
+        self.dataloader = dataloader
+        self.i = 0
+
+    def __iter__(self):
+        self.i = 0
+        self.iter = self.dataloader.__iter__()
+        return self
+
+    def __next__(self):
+        if self.i > 100:
+            raise StopIteration
+        self.i += 1
+        return next(self.iter)
+
+    # def __len__(self):
+    #     return 101
+
+
+calibration_dataset = nncf.Dataset(Loader(val_data_loader), transform_fn)
 ov_quantized_model = nncf.quantize(ov_model, calibration_dataset)
+exit(0)
 
 ###############################################################################
 # Benchmark performance, calculate compression rate and validate accuracy
