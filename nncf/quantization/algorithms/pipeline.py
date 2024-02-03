@@ -25,33 +25,25 @@ TModel = TypeVar("TModel")
 PipelineStep = List[Algorithm]
 
 import pickle
+from pathlib import Path
 overwrite_statistics = bool(0)
 save_statistics_as_dict = bool(0)
 save_statistics_as_obj = bool(0)
-read_stats_file = f"ptq_stats/obj_reversed.pkl"
-write_stats_file = f"ptq_stats/{'obj' if save_statistics_as_obj else ''}_last.pkl"
+read_stats_file = Path("ptq_stats/obj_reversed.pkl")
+write_stats_filepath = Path(f"ptq_stats/{'obj_' if save_statistics_as_obj else ''}stats.pkl")
 write_statistics = {}
 
 
-def process_algo_statistic_points(statistic_points, algo):
-    from nncf.quantization.algorithms.smooth_quant.algorithm import SmoothQuant
-    from nncf.quantization.algorithms.post_training.algorithm import PostTrainingQuantization
+def process_algo_statistic_points(statistic_points, step_index: int):
     from nncf.openvino.statistics.statistics import OVMinMaxTensorStatistic, OVMeanTensorStatistic
     from nncf.common.graph.transformations.commands import TargetType
 
-    if isinstance(algo, SmoothQuant):
-        algo_str = 'SQ'
-    elif isinstance(algo, PostTrainingQuantization):
-        algo_str = 'PTQ'
-    else:
-        raise Exception(f"Can't handle such algo: {type(algo)}")
-
     if save_statistics_as_obj:
-        with open(write_stats_file.replace(".pkl", f"_{algo_str}.pkl"), 'wb') as f:
+        with open(str(write_stats_filepath).replace(".pkl", f"_step{step_index}.pkl"), 'wb') as f:
             pickle.dump(statistic_points, f)
 
     if overwrite_statistics:
-        with open(read_stats_file.replace(".pkl", f"_{algo_str}.pkl"), 'rb') as f:
+        with open(str(read_stats_file).replace(".pkl", f"_step{step_index}.pkl"), 'rb') as f:
             read_statistic_points = pickle.load(f)
         return read_statistic_points
 
@@ -235,10 +227,22 @@ class Pipeline:
                 statistic_points = self.get_statistic_points_for_step(step_index, step_model, step_graph)
                 step_statistics = collect_statistics(statistic_points, step_model, step_graph, dataset)
 
+            new_statistic_points = process_algo_statistic_points(step_statistics, step_index)
+            if new_statistic_points is not None:
+                step_statistics = new_statistic_points
+
             # Run current pipeline step
             step_model = self.run_step(step_index, step_statistics, step_model, step_graph)
 
             step_graph = None  # We should rebuild the graph for the next pipeline step
+
+        if save_statistics_as_dict:
+            global write_statistics
+            print(f"Saving statistics to {write_stats_filepath}")
+            write_stats_filepath.parent.mkdir(exist_ok=True, parents=True)
+            with open(write_stats_filepath, 'wb') as f:
+                pickle.dump(write_statistics, f)
+            write_statistics = {}
 
         return step_model
 
@@ -260,16 +264,6 @@ class Pipeline:
             for statistic_points in algorithm.get_statistic_points(model, graph).values():
                 for statistic_point in statistic_points:
                     container.add_statistic_point(statistic_point)
-
-        new_container = process_algo_statistic_points(container, self.pipeline_steps[step_index])
-        if new_container is not None:
-            container = new_container
-
-        if step_index == len(self.pipeline_steps) - 1:
-            if save_statistics_as_dict:
-                print(f"Saving statistics to {write_stats_file}")
-                with open(write_stats_file, 'wb') as f:
-                    pickle.dump(write_statistics, f)
 
         return container
 
