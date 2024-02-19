@@ -402,7 +402,7 @@ class TensorCollector:
     def _build_statistic_container(statistic_container_cls: Type[TensorStatistic], kwargs: Dict[Any, Any]):
         if issubclass(statistic_container_cls, MinMaxTensorStatistic):
             return statistic_container_cls(
-                min_values=kwargs[MinMaxTensorStatistic.MIN_STAT], max_values=kwargs[MinMaxTensorStatistic.MAX_STAT]
+                min_values=kwargs[MinMaxTensorStatistic.MIN_STAT], max_values=kwargs[MinMaxTensorStatistic.MAX_STAT], no_op=kwargs.get("no_op", None)
             )
         if issubclass(statistic_container_cls, MeanTensorStatistic):
             return statistic_container_cls(

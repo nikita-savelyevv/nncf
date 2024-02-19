@@ -71,7 +71,7 @@ def process_algo_statistic_points(statistic_points, step_index: int):
                             assert "max_values" not in write_statistics[node_name][algo_name]
                             write_statistics[node_name][algo_name]["min_values"] = statistics.min_values
                             write_statistics[node_name][algo_name]["max_values"] = statistics.max_values
-                            if hasattr(statistics, "no_op"):
+                            if hasattr(statistics, "no_op") and statistics.no_op is not None:
                                 assert "no_op" not in write_statistics[node_name][algo_name]
                                 write_statistics[node_name][algo_name]["no_op"] = statistics.no_op
                     elif isinstance(statistics, OVMeanTensorStatistic):

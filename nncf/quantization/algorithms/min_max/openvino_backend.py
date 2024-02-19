@@ -215,9 +215,8 @@ class OVMinMaxAlgoBackend(MinMaxAlgoBackend):
 
             collector.register_statistic_branch(container_key, reducer, aggregator)
 
-        # from nncf.openvino.statistics.collectors import OVNoopReducer
-        # from nncf.experimental.common.tensor_statistics.collectors import NoopAggregator
-        # collector.register_statistic_branch('no_op', OVNoopReducer(), NoopAggregator(num_samples))
+        from nncf.experimental.common.tensor_statistics.collectors import NoopAggregator, NoopReducer
+        # collector.register_statistic_branch('no_op', NoopReducer(), NoopAggregator(num_samples))
 
         return collector
 
