@@ -56,6 +56,11 @@ def process_algo_statistic_points(statistic_points, step_index: int):
                 algo_name = algo.split('_')[0]
                 for collector in collectors:
                     statistics = collector.get_statistics()
+                    # if "MatMul_820" in node_name and hasattr(statistics, "no_op"):
+                    #     x = statistics.no_op[0]
+                    #     print(x.sum())
+                    #     # print(x)
+                    #     exit(0)
                     if node_name not in write_statistics:
                         write_statistics[node_name] = {}
                     if algo_name not in write_statistics[node_name]:
