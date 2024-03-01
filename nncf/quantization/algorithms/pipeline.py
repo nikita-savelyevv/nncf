@@ -236,6 +236,11 @@ class Pipeline:
             if new_statistic_points is not None:
                 step_statistics = new_statistic_points
 
+            # if step_index == 0:
+            #     continue
+            # if step_index > 0:
+            #     break
+
             # Run current pipeline step
             step_model = self.run_step(step_index, step_statistics, step_model, step_graph)
 

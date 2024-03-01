@@ -269,7 +269,7 @@ def _get_wrapped_min_max_tensor_statistic(target_shape: Tuple[int, ...]) -> Type
     """
 
     class WrappedPTMinMaxTensorStatistic(PTMinMaxTensorStatistic):
-        def __init__(self, min_values, max_values):
+        def __init__(self, min_values, max_values, no_op=None):
             min_values, max_values = _reshape_all((min_values, max_values), target_shape)
             super().__init__(min_values, max_values)
 

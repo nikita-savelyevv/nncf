@@ -88,6 +88,8 @@ class OVSmoothQuantAlgoBackend(SmoothQuantAlgoBackend):
         collector = TensorCollector()
         reducer = OVAbsMaxReducer(reduction_axes=stats_reduction_axes, inplace=inplace)
         aggregator = MaxAggregator(tensor_processor=OVNNCFCollectorTensorProcessor, num_samples=num_samples)
+        # from nncf.experimental.common.tensor_statistics.collectors import NoopAggregator
+        # aggregator = NoopAggregator(num_samples)
         collector.register_statistic_branch(branch_key, reducer, aggregator)
         return collector
 
