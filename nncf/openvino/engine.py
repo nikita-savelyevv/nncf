@@ -69,7 +69,7 @@ class OVNativeEngine(Engine):
 
         ie = ov.Core()
         stateful = model_has_state(model)
-        compiled_model = ie.compile_model(model, target_device.value)
+        compiled_model = ie.compile_model(model, target_device.value, config={"INFERENCE_PRECISION_HINT": "f32"})
         self.engine = OVCompiledModelEngine(compiled_model, stateful)
 
     def infer(

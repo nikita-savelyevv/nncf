@@ -42,7 +42,7 @@ class OVPreparedModel(PreparedModel):
 
     def __init__(self, model: ov.Model):
         self._stateful = model_has_state(model)
-        self._compiled_model = ov.compile_model(model)
+        self._compiled_model = ov.compile_model(model, config={"INFERENCE_PRECISION_HINT": "f32"})
         self._engine = None
 
     @property
