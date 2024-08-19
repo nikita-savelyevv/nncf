@@ -8,12 +8,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+import os
 from typing import Optional, Tuple
 
+import numpy as np
 import openvino as ov
 from openvino.runtime import opset13 as opset
 
+from nncf import CompressWeightsMode
 from nncf.quantization.algorithms.weight_compression.config import WeightCompressionConfig
 
 
@@ -30,6 +32,16 @@ class OVCompressionPrimitiveCache:
         zero_point_shape: Optional[Tuple] = None,
         invert_scale: Optional[bool] = False,
     ):
+        DYNAMIC_COMPRESSION = bool(int(os.environ.get("DYNAMIC_COMPRESSION", "0")))
+        if DYNAMIC_COMPRESSION:
+            weight_shape = (-1,) * len(weight_shape)
+            scale_shape = (-1,) * (len(scale_shape) - 1) + (1,)
+            if zero_point_shape is not None:
+                zero_point_shape = (-1,) * (len(zero_point_shape) - 1) + (1,)
+
+        recompile = bool(int(os.environ.get("RECOMPILE", "0")))
+        if recompile:
+            return self._build_compress_model(config, weight_shape, scale_shape, zero_point_shape, invert_scale)
         key = (config.mode, config.num_bits, weight_shape, scale_shape, invert_scale)
         if zero_point_shape is not None:
             key += (zero_point_shape,)
@@ -46,6 +58,16 @@ class OVCompressionPrimitiveCache:
         scale_shape: Tuple,
         zero_point_shape: Optional[Tuple] = None,
     ):
+        DYNAMIC_COMPRESSION = bool(int(os.environ.get("DYNAMIC_COMPRESSION", "0")))
+        if DYNAMIC_COMPRESSION:
+            weight_shape = (-1,) * len(weight_shape)
+            scale_shape = (-1,) * (len(scale_shape) - 1) + (1,)
+            if zero_point_shape is not None:
+                zero_point_shape = (-1,) * (len(zero_point_shape) - 1) + (1,)
+
+        recompile = bool(int(os.environ.get("RECOMPILE", "0")))
+        if recompile:
+            return self._build_compress_decompress_model(config, weight_shape, scale_shape, zero_point_shape)
         key = (config.mode, config.num_bits, weight_shape, scale_shape)
         if zero_point_shape is not None:
             key += (zero_point_shape,)
@@ -64,26 +86,39 @@ class OVCompressionPrimitiveCache:
         invert_scale: Optional[bool] = False,
         return_nodes: bool = False,
     ):
-        w = opset.parameter(weight_shape, name="w")
+        FP16_INPUT = bool(int(os.environ.get("FP16_INPUT", "0")))
+        INT8_OUTPUT = bool(int(os.environ.get("INT8_OUTPUT", "0")))
+        SHARE_OUTPUTS = bool(int(os.environ.get("SHARE_OUTPUTS", "0")))
+
+        w = opset.parameter(weight_shape, name="w", dtype=np.float16 if FP16_INPUT else np.float32)
         s = opset.parameter(scale_shape, name="s")
         parameters = [w, s]
-        if invert_scale:
-            compressed_w = w * (1 / s)
-        else:
-            compressed_w = w / s
+
+        if FP16_INPUT:
+            w = opset.convert(w, ov.Type.f32)
+
+        compressed_w = w * (1 / s) if invert_scale else w / s
+
         num_bits = config.num_bits
-        if zero_point_shape is not None:
+        if config.mode in [CompressWeightsMode.INT8_ASYM, config.mode.INT4_ASYM]:
+            dtype = ov.Type.u8 if config.mode == CompressWeightsMode.INT8_ASYM else ov.Type.u4
             level_low = 0
             level_high = 2**num_bits - 1
 
             zp = opset.parameter(zero_point_shape, name="zp")
             parameters.append(zp)
             compressed_w += zp
-        else:
+        elif config.mode in [CompressWeightsMode.INT8_SYM, config.mode.INT4_SYM]:
+            dtype = ov.Type.i8 if config.mode == CompressWeightsMode.INT8_SYM else ov.Type.i4
             level_low = -(2 ** (num_bits - 1))
             level_high = 2 ** (num_bits - 1) - 1
+        else:
+            raise Exception
 
         result = opset.clamp(opset.round(compressed_w), level_low, level_high, name="compressed_weights")
+
+        if INT8_OUTPUT:
+            result = opset.convert(result, dtype)
 
         if return_nodes:
             return parameters, result
@@ -92,7 +127,7 @@ class OVCompressionPrimitiveCache:
 
         compiled_model = ov.compile_model(model, device_name="CPU")
 
-        return lambda parameters: compiled_model(parameters)[0]
+        return lambda parameters: compiled_model(parameters, share_outputs=SHARE_OUTPUTS)[0]
 
     @staticmethod
     def _build_compress_decompress_model(

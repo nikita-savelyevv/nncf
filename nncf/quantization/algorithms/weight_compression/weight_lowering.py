@@ -9,6 +9,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import logging
+import os
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
@@ -307,13 +308,16 @@ def calculate_quantized_weight(
     if weight.backend == TensorBackend.numpy and not is_openvino_available():
         log_once(logging.INFO, "Compression time may improve after installing OpenVINO")
 
-    if weight.backend == TensorBackend.numpy and is_openvino_available():
+    NUMPY_COMPRESSION = bool(int(os.environ.get("NUMPY_COMPRESSION", "0")))
+    if weight.backend == TensorBackend.numpy and is_openvino_available() and not NUMPY_COMPRESSION:
         from nncf.openvino.quantization.compression_primitives import OV_COMPRESSION_PRIMITIVE_CACHE
 
         zero_point_shape = None if zero_point is None else zero_point.shape
         compress_weight_primitive = OV_COMPRESSION_PRIMITIVE_CACHE.get_compress_weight_primitive(
             config, weight.shape, scale.shape, zero_point_shape
         )
+
+        assert weight.data.flags["C_CONTIGUOUS"]
         input_tensors = weight.data, scale.data
         if zero_point is not None:
             input_tensors += (zero_point.data,)
@@ -339,7 +343,8 @@ def calculate_quantized_weight(
         compressed_weights = fns.clip(compressed_weights, level_low, level_high)
 
     dtype = TensorDataType.uint8 if asym_quant else TensorDataType.int8
-    compressed_weights = compressed_weights.astype(dtype)
+    if compressed_weights.dtype != dtype:
+        compressed_weights = compressed_weights.astype(dtype)
 
     return compressed_weights
 
@@ -405,7 +410,8 @@ def do_int_quantization(
     assert config.is_integer(), "The function supports integer quantization only"
     group_size = config.group_size
 
-    if weight.dtype != TensorDataType.float32:
+    FP16_INPUT = bool(int(os.environ.get("FP16_INPUT", "0")))
+    if weight.dtype != TensorDataType.float32 and not FP16_INPUT:
         weight = weight.astype(TensorDataType.float32)
 
     if group_size != -1:
