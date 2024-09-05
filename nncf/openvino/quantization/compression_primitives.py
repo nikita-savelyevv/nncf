@@ -86,15 +86,16 @@ class OVCompressionPrimitiveCache:
         invert_scale: Optional[bool] = False,
         return_nodes: bool = False,
     ):
-        FP16_INPUT = bool(int(os.environ.get("FP16_INPUT", "0")))
+        INPUT_DTYPE = os.environ.get("INPUT_DTYPE", "fp32")
         INT8_OUTPUT = bool(int(os.environ.get("INT8_OUTPUT", "0")))
         SHARE_OUTPUTS = bool(int(os.environ.get("SHARE_OUTPUTS", "0")))
 
-        w = opset.parameter(weight_shape, name="w", dtype=np.float16 if FP16_INPUT else np.float32)
+        input_dtype = ov.Type.f32 if INPUT_DTYPE == "fp32" else ov.Type.f16 if INPUT_DTYPE == "fp16" else ov.Type.bf16
+        w = opset.parameter(weight_shape, name="w", dtype=input_dtype)
         s = opset.parameter(scale_shape, name="s")
         parameters = [w, s]
 
-        if FP16_INPUT:
+        if input_dtype != ov.Type.f32:
             w = opset.convert(w, ov.Type.f32)
 
         compressed_w = w * (1 / s) if invert_scale else w / s

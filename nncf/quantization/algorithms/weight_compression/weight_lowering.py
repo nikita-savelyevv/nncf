@@ -309,7 +309,7 @@ def calculate_quantized_weight(
         log_once(logging.INFO, "Compression time may improve after installing OpenVINO")
 
     NUMPY_COMPRESSION = bool(int(os.environ.get("NUMPY_COMPRESSION", "0")))
-    if weight.backend == TensorBackend.numpy and is_openvino_available() and not NUMPY_COMPRESSION:
+    if weight.backend in [TensorBackend.numpy, TensorBackend.ov] and is_openvino_available() and not NUMPY_COMPRESSION:
         from nncf.openvino.quantization.compression_primitives import OV_COMPRESSION_PRIMITIVE_CACHE
 
         zero_point_shape = None if zero_point is None else zero_point.shape
@@ -317,7 +317,8 @@ def calculate_quantized_weight(
             config, weight.shape, scale.shape, zero_point_shape
         )
 
-        assert weight.data.flags["C_CONTIGUOUS"]
+        if hasattr(weight.data, "flags"):
+            assert weight.data.flags["C_CONTIGUOUS"]
         input_tensors = weight.data, scale.data
         if zero_point is not None:
             input_tensors += (zero_point.data,)
@@ -410,8 +411,8 @@ def do_int_quantization(
     assert config.is_integer(), "The function supports integer quantization only"
     group_size = config.group_size
 
-    FP16_INPUT = bool(int(os.environ.get("FP16_INPUT", "0")))
-    if weight.dtype != TensorDataType.float32 and not FP16_INPUT:
+    INPUT_DTYPE = os.environ.get("INPUT_DTYPE", "fp32")
+    if weight.dtype != TensorDataType.float32 and INPUT_DTYPE == "fp32":
         weight = weight.astype(TensorDataType.float32)
 
     if group_size != -1:

@@ -36,7 +36,9 @@ def parse_arguments():
 
     parser.add_argument("--dynamic-compression", action="store_true", help="Enable dynamic compression")
 
-    parser.add_argument("--fp16-input", action="store_true", help="Enable FP16 input mode")
+    parser.add_argument("--input-dtype", type=str, choices=["fp32", "fp16", "bf16"], default="fp32", help="OV model input dtype")
+
+    parser.add_argument("--bf16-input", action="store_true", help="Enable BF16 input mode")
 
     parser.add_argument("--int8-output", action="store_true", help="Output in int8")
 
@@ -61,7 +63,7 @@ def main(args):
 
     numpy_compression = args.numpy_compression
     dynamic_compression = args.dynamic_compression
-    fp16_input = args.fp16_input
+    input_dtype = args.input_dtype
     int8_output = args.int8_output
     recompile = args.recompile
     share_outputs = args.share_outputs
@@ -71,7 +73,7 @@ def main(args):
     else:
         log_dir_suffix = "ov-dynamic" if dynamic_compression else "ov-static"
         log_dir_suffix = f"{log_dir_suffix}_{('output-int8' if int8_output else 'output-fp32')}"
-        log_dir_suffix = f"{log_dir_suffix}_{('input-fp16' if fp16_input else 'input-fp32')}"
+        log_dir_suffix = f"{log_dir_suffix}_{f'input-{input_dtype}'}"
         if recompile:
             log_dir_suffix = f"{log_dir_suffix}_recompile"
         if share_outputs:
@@ -89,7 +91,7 @@ def main(args):
 
     os.environ["NUMPY_COMPRESSION"] = f"{int(numpy_compression)}"
     os.environ["DYNAMIC_COMPRESSION"] = f"{int(dynamic_compression)}"
-    os.environ["FP16_INPUT"] = f"{int(fp16_input)}"
+    os.environ["INPUT_DTYPE"] = input_dtype
     os.environ["INT8_OUTPUT"] = f"{int(int8_output)}"
     os.environ["RECOMPILE"] = f"{int(recompile)}"
     os.environ["SHARE_OUTPUTS"] = f"{int(share_outputs)}"
@@ -149,7 +151,7 @@ def main(args):
             f"{model_path},"
             f"{numpy_compression},"
             f"{'-' if numpy_compression else 'Dynamic' if dynamic_compression else 'Static'},"
-            f"{'-' if numpy_compression else 'FP16' if fp16_input else 'FP32'},"
+            f"{'-' if numpy_compression else input_dtype.upper()},"
             f"{'-' if numpy_compression else 'INT8' if int8_output else 'FP32'},"
             f"{compression_time:.2f},"
             f"{peak_memory:.2f},"
