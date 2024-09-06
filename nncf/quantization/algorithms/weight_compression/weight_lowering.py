@@ -290,6 +290,7 @@ def calculate_quantized_weight(
     config: WeightCompressionConfig,
     scale: Tensor,
     zero_point: Optional[Tensor] = None,
+    reduction_axes: Optional[Tuple] = None,
     invert_scale=False,
 ) -> Tensor:
     """
@@ -308,34 +309,44 @@ def calculate_quantized_weight(
     if weight.backend == TensorBackend.numpy and not is_openvino_available():
         log_once(logging.INFO, "Compression time may improve after installing OpenVINO")
 
+    if hasattr(weight.data, "flags"):
+        assert weight.data.flags["C_CONTIGUOUS"]
+
     NUMPY_COMPRESSION = bool(int(os.environ.get("NUMPY_COMPRESSION", "0")))
     if weight.backend in [TensorBackend.numpy, TensorBackend.ov] and is_openvino_available() and not NUMPY_COMPRESSION:
         from nncf.openvino.quantization.compression_primitives import OV_COMPRESSION_PRIMITIVE_CACHE
 
-        zero_point_shape = None if zero_point is None else zero_point.shape
-        compress_weight_primitive = OV_COMPRESSION_PRIMITIVE_CACHE.get_compress_weight_primitive(
-            config, weight.shape, scale.shape, zero_point_shape
-        )
-
-        if hasattr(weight.data, "flags"):
-            assert weight.data.flags["C_CONTIGUOUS"]
-        input_tensors = weight.data, scale.data
-        if zero_point is not None:
-            input_tensors += (zero_point.data,)
-        compressed_weights = Tensor(compress_weight_primitive(input_tensors))
+        input_tensors = (weight.data,)
+        if scale is not None:
+            zero_point_shape = None if zero_point is None else zero_point.shape
+            compiled_model, compress_weight_primitive = OV_COMPRESSION_PRIMITIVE_CACHE.get_compress_weight_primitive(
+                config, weight.shape, scale.shape, zero_point_shape
+            )
+            input_tensors += (scale.data,)
+            if zero_point is not None:
+                input_tensors += (zero_point.data,)
+            compressed_weights = Tensor(compress_weight_primitive(input_tensors)[0])
+        else:
+            compiled_model, compress_weight_primitive = OV_COMPRESSION_PRIMITIVE_CACHE.get_compress_weight_primitive_end_to_end(
+                config, weight.shape, reduction_axes, invert_scale
+            )
+            results = compress_weight_primitive(input_tensors)
+            results = [Tensor(results[i]) for i in range(3)]
+            if asym_quant:
+                compressed_weights, scale, zero_point = results
+            else:
+                compressed_weights, scale = results
     else:
         if weight.dtype != TensorDataType.float32:
             weight = weight.astype(TensorDataType.float32)
-        if scale.dtype != TensorDataType.float32:
-            scale = scale.astype(TensorDataType.float32)
+        assert scale.dtype == TensorDataType.float32
 
         num_bits = config.num_bits
         level_low = 0 if asym_quant else -(2 ** (num_bits - 1))
         level_high = 2**num_bits - 1 if asym_quant else 2 ** (num_bits - 1) - 1
 
         if invert_scale:
-            scale = fns.power(scale, -1)
-            compressed_weights = weight * scale
+            compressed_weights = weight * fns.power(scale, -1)
         else:
             compressed_weights = weight / scale
         if zero_point is not None:
@@ -347,7 +358,7 @@ def calculate_quantized_weight(
     if compressed_weights.dtype != dtype:
         compressed_weights = compressed_weights.astype(dtype)
 
-    return compressed_weights
+    return compressed_weights, scale, zero_point
 
 
 def calculate_quantized_dequantized_weight(
@@ -415,18 +426,22 @@ def do_int_quantization(
     if weight.dtype != TensorDataType.float32 and INPUT_DTYPE == "fp32":
         weight = weight.astype(TensorDataType.float32)
 
-    if group_size != -1:
-        # weights are reshaped from [a1, r, a2] to [a1, r//gs, gs, a2]
-        weight, reduction_axes = reshape_weight_for_grouped_quantization(weight, reduction_axes, group_size)
+    END_TO_END_COMPRESSION = bool(int(os.environ.get("END_TO_END_COMPRESSION", "0")))
+    if not END_TO_END_COMPRESSION or group_size != -1:
+        if group_size != -1:
+            # weights are reshaped from [a1, r, a2] to [a1, r//gs, gs, a2]
+            weight, reduction_axes = reshape_weight_for_grouped_quantization(weight, reduction_axes, group_size)
 
-    if precomputed_zero_point is None or precomputed_zero_point is None:
-        scale, zero_point = calculate_integer_quantization_params(weight, reduction_axes, config)
-    if precomputed_scale is not None:
-        scale = precomputed_scale
-    if precomputed_zero_point is not None:
-        zero_point = precomputed_zero_point
+        if precomputed_zero_point is None or precomputed_scale is None:
+            scale, zero_point = calculate_integer_quantization_params(weight, reduction_axes, config)
+        if precomputed_scale is not None:
+            scale = precomputed_scale
+        if precomputed_zero_point is not None:
+            zero_point = precomputed_zero_point
+    else:
+        scale = zero_point = None
 
-    compressed_weights = calculate_quantized_weight(weight, config, scale, zero_point, invert_scale)
+    compressed_weights, scale, zero_point = calculate_quantized_weight(weight, config, scale, zero_point, reduction_axes, invert_scale)
     return compressed_weights, scale, zero_point
 
 

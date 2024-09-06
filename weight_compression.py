@@ -32,9 +32,11 @@ def parse_arguments():
 
     parser.add_argument("--log-dir", default="./compression_logs", type=str, help="Directory where logs will be saved")
 
-    parser.add_argument("--numpy-compression", action="store_true", help="Enable numpy compression")
+    parser.add_argument("--numpy", action="store_true", help="Enable numpy compression")
 
-    parser.add_argument("--dynamic-compression", action="store_true", help="Enable dynamic compression")
+    parser.add_argument("--dynamic", action="store_true", help="Enable compression with dynamic-shaped OV models")
+
+    parser.add_argument("--end-to-end", action="store_true", help="Enable end-to-end OV compression")
 
     parser.add_argument("--input-dtype", type=str, choices=["fp32", "fp16", "bf16"], default="fp32", help="OV model input dtype")
 
@@ -61,8 +63,10 @@ def main(args):
     model_path = Path(args.model_path)
     log_dir = Path(args.log_dir)
 
-    numpy_compression = args.numpy_compression
-    dynamic_compression = args.dynamic_compression
+    numpy_compression = args.numpy
+    dynamic_compression = args.dynamic
+    end_to_end_compression = args.end_to_end
+    # end_to_end_compression = bool(0)
     input_dtype = args.input_dtype
     int8_output = args.int8_output
     recompile = args.recompile
@@ -71,8 +75,9 @@ def main(args):
     if numpy_compression:
         log_dir_suffix = "numpy"
     else:
-        log_dir_suffix = "ov-dynamic" if dynamic_compression else "ov-static"
-        log_dir_suffix = f"{log_dir_suffix}_{('output-int8' if int8_output else 'output-fp32')}"
+        log_dir_suffix = "end-to-end_" if end_to_end_compression else ""
+        log_dir_suffix = f"{log_dir_suffix}{'ov-dynamic' if dynamic_compression else 'ov-static'}"
+        log_dir_suffix = f"{log_dir_suffix}_{'output-int8' if int8_output else 'output-fp32'}"
         log_dir_suffix = f"{log_dir_suffix}_{f'input-{input_dtype}'}"
         if recompile:
             log_dir_suffix = f"{log_dir_suffix}_recompile"
@@ -91,6 +96,7 @@ def main(args):
 
     os.environ["NUMPY_COMPRESSION"] = f"{int(numpy_compression)}"
     os.environ["DYNAMIC_COMPRESSION"] = f"{int(dynamic_compression)}"
+    os.environ["END_TO_END_COMPRESSION"] = f"{int(end_to_end_compression)}"
     os.environ["INPUT_DTYPE"] = input_dtype
     os.environ["INT8_OUTPUT"] = f"{int(int8_output)}"
     os.environ["RECOMPILE"] = f"{int(recompile)}"
@@ -113,8 +119,10 @@ def main(args):
     time.sleep(0.5)
 
     before_cache_deletion = memory_monitors[2].get_data(True)[1][-1]
-    if OV_COMPRESSION_PRIMITIVE_CACHE._compress_weight_model_cache:
+    if OV_COMPRESSION_PRIMITIVE_CACHE._compress_weight_model_cache or \
+       OV_COMPRESSION_PRIMITIVE_CACHE._compress_weight_end_to_end_model_cache:
         OV_COMPRESSION_PRIMITIVE_CACHE._compress_weight_model_cache.clear()
+        OV_COMPRESSION_PRIMITIVE_CACHE._compress_weight_end_to_end_model_cache.clear()
         gc.collect()
         time.sleep(memory_monitors[0].interval * 10)
         after_cache_deletion = memory_monitors[2].get_data(True)[1][-1]
