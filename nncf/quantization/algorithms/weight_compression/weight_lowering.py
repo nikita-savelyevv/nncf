@@ -370,6 +370,10 @@ def calculate_quantized_weight(
                 compressed_weights_ov, scale_ov, zero_point_ov = results
             else:
                 compressed_weights_ov, scale_ov = results
+
+        RELEASE_MEMORY = bool(int(os.environ.get("RELEASE_MEMORY", "0")))
+        if RELEASE_MEMORY:
+            compiled_model.release_memory()
     if not ov_compression or COMPARE_WITH_NUMPY:
         if weight.dtype != TensorDataType.float32:
             weight = weight.astype(TensorDataType.float32)

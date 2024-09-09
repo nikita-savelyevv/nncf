@@ -272,8 +272,8 @@ class OVCompressionPrimitiveCache:
 
         compiled_model = ov.compile_model(model, device_name="CPU")
 
-        SHARE_OUTPUTS = bool(int(os.environ.get("SHARE_OUTPUTS", "0")))
-        return compiled_model, lambda parameters: compiled_model(parameters, share_outputs=SHARE_OUTPUTS)
+        NOT_SHARED_OUTPUTS = bool(int(os.environ.get("NOT_SHARED_OUTPUTS", "0")))
+        return compiled_model, lambda parameters: compiled_model(parameters, share_outputs=not NOT_SHARED_OUTPUTS)
 
     @staticmethod
     def _get_compress_decompress_model(

@@ -40,19 +40,19 @@ def parse_arguments():
 
     parser.add_argument("--input-dtype", type=str, choices=["fp32", "fp16", "bf16"], default="fp32", help="OV model input dtype")
 
-    parser.add_argument("--bf16-input", action="store_true", help="Enable BF16 input mode")
-
-    parser.add_argument("--int8-output", action="store_true", help="Output in int8")
+    parser.add_argument("--int8-output", action="store_true", help="Output in (u)int8")
 
     parser.add_argument("--recompile", action="store_true", help="Recompile model every time")
 
-    parser.add_argument("--share-outputs", action="store_true", help="Share outputs")
+    parser.add_argument("--not-shared-outputs", action="store_true", help="Do not share outputs")
 
     parser.add_argument("--save-model", action="store_true", help="Save compressed model")
 
     parser.add_argument("--compare-with-numpy", action="store_true", help="Compare compressed weight with the one computed with NumPy")
 
     parser.add_argument("--invert-numpy-division", action="store_true", help="Invert division when compressing with NumPy")
+
+    parser.add_argument("--release-memory", action="store_true", help="Release memory")
 
     return parser.parse_args()
 
@@ -73,10 +73,11 @@ def main(args):
     input_dtype = args.input_dtype
     int8_output = args.int8_output
     recompile = args.recompile
-    share_outputs = args.share_outputs
+    not_shared_outputs = args.not_shared_outputs
     save_model = args.save_model
     compare_with_numpy = args.compare_with_numpy
     invert_numpy_division = args.invert_numpy_division
+    release_memory = args.release_memory
     if numpy_compression:
         log_dir_suffix = "numpy"
         if invert_numpy_division:
@@ -88,8 +89,8 @@ def main(args):
         log_dir_suffix = f"{log_dir_suffix}_{f'input-{input_dtype}'}"
         if recompile:
             log_dir_suffix = f"{log_dir_suffix}_recompile"
-        if share_outputs:
-            log_dir_suffix = f"{log_dir_suffix}_share-outputs"
+        if not_shared_outputs:
+            log_dir_suffix = f"{log_dir_suffix}_not-shared-outputs"
 
     memory_monitors = []
     for memory_type, mem_from_zero in [(MemoryType.RSS, False), (MemoryType.SYSTEM, False), (MemoryType.SYSTEM, True)]:
@@ -107,9 +108,10 @@ def main(args):
     os.environ["INPUT_DTYPE"] = input_dtype
     os.environ["INT8_OUTPUT"] = f"{int(int8_output)}"
     os.environ["RECOMPILE"] = f"{int(recompile)}"
-    os.environ["SHARE_OUTPUTS"] = f"{int(share_outputs)}"
+    os.environ["NOT_SHARED_OUTPUTS"] = f"{int(not_shared_outputs)}"
     os.environ["COMPARE_WITH_NUMPY"] = f"{int(compare_with_numpy)}"
     os.environ["INVERT_NUMPY_DIVISION"] = f"{int(invert_numpy_division)}"
+    os.environ["RELEASE_MEMORY"] = f"{int(release_memory)}"
 
     start_time = time.perf_counter()
     compressed_model = nncf.compress_weights(model, mode=nncf.CompressWeightsMode.INT8_ASYM)
@@ -155,9 +157,11 @@ def main(args):
         if not csv_exists:
             f.write(
                 "Model Path,"
-                "Numpy,"
-                "Submodel Type,"
-                "Input,Output,"
+                "Backend,"
+                "End-to-end,"
+                "Input Shapes,"
+                "Input,"
+                "Output,"
                 "Compression Time,"
                 "Peak Memory,"
                 "Cache Size,"
@@ -166,7 +170,8 @@ def main(args):
             )
         f.write(
             f"{model_path},"
-            f"{numpy_compression},"
+            f"{'NumPy' if numpy_compression else 'OV'},"
+            f"{end_to_end_compression},"
             f"{'-' if numpy_compression else 'Dynamic' if dynamic_compression else 'Static'},"
             f"{'-' if numpy_compression else input_dtype.upper()},"
             f"{'-' if numpy_compression else 'INT8' if int8_output else 'FP32'},"
