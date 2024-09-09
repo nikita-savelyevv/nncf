@@ -50,6 +50,10 @@ def parse_arguments():
 
     parser.add_argument("--save-model", action="store_true", help="Save compressed model")
 
+    parser.add_argument("--compare-with-numpy", action="store_true", help="Compare compressed weight with the one computed with NumPy")
+
+    parser.add_argument("--invert-numpy-division", action="store_true", help="Invert division when compressing with NumPy")
+
     return parser.parse_args()
 
 
@@ -66,14 +70,17 @@ def main(args):
     numpy_compression = args.numpy
     dynamic_compression = args.dynamic
     end_to_end_compression = args.end_to_end
-    # end_to_end_compression = bool(0)
     input_dtype = args.input_dtype
     int8_output = args.int8_output
     recompile = args.recompile
     share_outputs = args.share_outputs
     save_model = args.save_model
+    compare_with_numpy = args.compare_with_numpy
+    invert_numpy_division = args.invert_numpy_division
     if numpy_compression:
         log_dir_suffix = "numpy"
+        if invert_numpy_division:
+            log_dir_suffix += "_inverted"
     else:
         log_dir_suffix = "end-to-end_" if end_to_end_compression else ""
         log_dir_suffix = f"{log_dir_suffix}{'ov-dynamic' if dynamic_compression else 'ov-static'}"
@@ -101,9 +108,11 @@ def main(args):
     os.environ["INT8_OUTPUT"] = f"{int(int8_output)}"
     os.environ["RECOMPILE"] = f"{int(recompile)}"
     os.environ["SHARE_OUTPUTS"] = f"{int(share_outputs)}"
+    os.environ["COMPARE_WITH_NUMPY"] = f"{int(compare_with_numpy)}"
+    os.environ["INVERT_NUMPY_DIVISION"] = f"{int(invert_numpy_division)}"
 
     start_time = time.perf_counter()
-    compressed_model = nncf.compress_weights(model)
+    compressed_model = nncf.compress_weights(model, mode=nncf.CompressWeightsMode.INT8_ASYM)
     compression_time = time.perf_counter() - start_time
     print(f"Compression Time: {compression_time:.2f} sec.")
 

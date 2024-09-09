@@ -141,7 +141,7 @@ def calculate_e2m1_scale(weight: Tensor, reduction_axes: ReductionAxes, max_val=
     return scale
 
 
-def calculate_signed_scale(weight: Tensor, reduction_axes: ReductionAxes, num_bits=4) -> Tensor:
+def calculate_signed_scale(weight: Tensor, reduction_axes: ReductionAxes, num_bits=4, invert_division: Optional[bool] = False,) -> Tensor:
     """
     Calculates the signed scale for symmetric quantization.
 
@@ -156,7 +156,10 @@ def calculate_signed_scale(weight: Tensor, reduction_axes: ReductionAxes, num_bi
     w_max = fns.max(weight, axis=reduction_axes, keepdims=True)
 
     scale = fns.where(w_abs_min >= w_max, w_abs_min, -w_max)
-    scale /= level_high
+    if invert_division:
+        scale *= (1.0 / level_high)
+    else:
+        scale /= level_high
 
     eps = fns.finfo(scale).eps
     scale = fns.where(fns.abs(scale) < eps, eps, scale)
@@ -253,7 +256,10 @@ def calculate_normalized_weight_and_fp4_scale(
 
 
 def calculate_integer_quantization_params(
-    weight: Tensor, reduction_axes: ReductionAxes, config: WeightCompressionConfig
+    weight: Tensor,
+    reduction_axes: ReductionAxes,
+    config: WeightCompressionConfig,
+    invert_division: Optional[bool] = False,
 ) -> Tuple[Tensor, Tensor]:
     """
     Calculates the scale and zero point for uniform quantization (INT4, INT8), when the range of values is divided into
@@ -277,12 +283,36 @@ def calculate_integer_quantization_params(
         min_values = fns.min(weight, axis=reduction_axes, keepdims=True)  # [a1, r, a2] -> [a1, 1, a2]
         max_values = fns.max(weight, axis=reduction_axes, keepdims=True)  # [a1, r, a2] -> [a1, 1, a2]
         scale, zero_point = calculate_scale_zero_point(
-            min_values, max_values, level_low, level_high, narrow_range=False
+            min_values, max_values, level_low, level_high, narrow_range=False, invert_division=invert_division,
         )
         return scale, zero_point
 
-    scale = calculate_signed_scale(weight, reduction_axes, num_bits)
+    scale = calculate_signed_scale(weight, reduction_axes, num_bits, invert_division=invert_division)
     return scale, None
+
+
+def compare_np_to_ov(config, w, w_ov, s, s_ov, zp=None, zp_ov=None):
+    def compare(gt, x, label, threshold):
+        diff = gt.astype(TensorDataType.float32) - x.astype(TensorDataType.float32)
+        max_diff = fns.abs(diff).max()
+        mean_abs_diff = fns.mean(fns.abs(diff))
+        mean_rel_diff = fns.mean(fns.abs(diff) / fns.maximum(gt.astype(TensorDataType.float32), 1))
+        too_large = max_diff > threshold
+        if too_large:
+            print(f"{label}: Max diff: {max_diff}. Mean abs diff: {mean_abs_diff}. Mean rel diff: {mean_rel_diff}.")
+            return True
+        return False
+
+    diff_too_large = False
+    if w_ov is not None:
+        diff_too_large = compare(w, w_ov, "Weight",
+                                 threshold=0.0 if config.mode == CompressWeightsMode.INT8_SYM else 1.0)
+    if s_ov is not None:
+        diff_too_large = compare(s, s_ov, "Scale", 0.0) or diff_too_large
+    if zp_ov is not None:
+        diff_too_large = compare(zp, zp_ov, "Zero point", 0.0) or diff_too_large
+    if diff_too_large:
+        exit(1)
 
 
 def calculate_quantized_weight(
@@ -291,7 +321,7 @@ def calculate_quantized_weight(
     scale: Tensor,
     zero_point: Optional[Tensor] = None,
     reduction_axes: Optional[Tuple] = None,
-    invert_scale=False,
+    invert_division=False,
 ) -> Tensor:
     """
     Quantizes the weight tensor using the provided scale and zero point.
@@ -300,7 +330,7 @@ def calculate_quantized_weight(
     :param config: Weight compression configuration.
     :param scale: Scale tensor used for quantization.
     :param zero_point: Zero point tensor used for quantization.
-    :param invert_scale: applies inversion for scale and then multiply by weights instead of division.
+    :param invert_division: apply division `a/b` as `a*(1/b)`.
     :return: Quantized weight tensor of uint8 or int8 type.
     """
 
@@ -313,11 +343,15 @@ def calculate_quantized_weight(
         assert weight.data.flags["C_CONTIGUOUS"]
 
     NUMPY_COMPRESSION = bool(int(os.environ.get("NUMPY_COMPRESSION", "0")))
-    if weight.backend in [TensorBackend.numpy, TensorBackend.ov] and is_openvino_available() and not NUMPY_COMPRESSION:
+    END_TO_END_COMPRESSION = bool(int(os.environ.get("END_TO_END_COMPRESSION", "0")))
+    COMPARE_WITH_NUMPY = bool(int(os.environ.get("COMPARE_WITH_NUMPY", "0")))
+    ov_compression = weight.backend in [TensorBackend.numpy, TensorBackend.ov] and is_openvino_available() and not NUMPY_COMPRESSION
+    compressed_weights_ov, scale_ov, zero_point_ov = None, None, None
+    if ov_compression:
         from nncf.openvino.quantization.compression_primitives import OV_COMPRESSION_PRIMITIVE_CACHE
 
         input_tensors = (weight.data,)
-        if scale is not None:
+        if not END_TO_END_COMPRESSION:
             zero_point_shape = None if zero_point is None else zero_point.shape
             compiled_model, compress_weight_primitive = OV_COMPRESSION_PRIMITIVE_CACHE.get_compress_weight_primitive(
                 config, weight.shape, scale.shape, zero_point_shape
@@ -325,18 +359,18 @@ def calculate_quantized_weight(
             input_tensors += (scale.data,)
             if zero_point is not None:
                 input_tensors += (zero_point.data,)
-            compressed_weights = Tensor(compress_weight_primitive(input_tensors)[0])
+            compressed_weights_ov = Tensor(compress_weight_primitive(input_tensors)[0])
         else:
             compiled_model, compress_weight_primitive = OV_COMPRESSION_PRIMITIVE_CACHE.get_compress_weight_primitive_end_to_end(
-                config, weight.shape, reduction_axes, invert_scale
+                config, weight.shape, reduction_axes
             )
             results = compress_weight_primitive(input_tensors)
-            results = [Tensor(results[i]) for i in range(3)]
+            results = [Tensor(results[i]) for i in range(len(results))]
             if asym_quant:
-                compressed_weights, scale, zero_point = results
+                compressed_weights_ov, scale_ov, zero_point_ov = results
             else:
-                compressed_weights, scale = results
-    else:
+                compressed_weights_ov, scale_ov = results
+    if not ov_compression or COMPARE_WITH_NUMPY:
         if weight.dtype != TensorDataType.float32:
             weight = weight.astype(TensorDataType.float32)
         assert scale.dtype == TensorDataType.float32
@@ -345,18 +379,23 @@ def calculate_quantized_weight(
         level_low = 0 if asym_quant else -(2 ** (num_bits - 1))
         level_high = 2**num_bits - 1 if asym_quant else 2 ** (num_bits - 1) - 1
 
-        if invert_scale:
-            compressed_weights = weight * fns.power(scale, -1)
-        else:
-            compressed_weights = weight / scale
+        compressed_weights = weight * (1.0 / scale) if invert_division else weight / scale
         if zero_point is not None:
             compressed_weights += zero_point.astype(weight.dtype)
         compressed_weights = fns.round(compressed_weights)
         compressed_weights = fns.clip(compressed_weights, level_low, level_high)
 
+        if COMPARE_WITH_NUMPY:
+            compare_np_to_ov(config, compressed_weights, compressed_weights_ov, scale, scale_ov, zero_point, zero_point_ov)
+
+    if compressed_weights_ov is not None:
+        compressed_weights = compressed_weights_ov
+
     dtype = TensorDataType.uint8 if asym_quant else TensorDataType.int8
     if compressed_weights.dtype != dtype:
         compressed_weights = compressed_weights.astype(dtype)
+    if scale_ov is not None:
+        scale, zero_point = scale_ov, zero_point_ov
 
     return compressed_weights, scale, zero_point
 
@@ -391,7 +430,7 @@ def do_int_quantization(
     config: WeightCompressionConfig,
     precomputed_scale: Tensor = None,
     precomputed_zero_point: Tensor = None,
-    invert_scale=False,
+    invert_division=False,
 ) -> Tuple[Tensor, Tensor, Tensor]:
     """
     The method quantizes the given weights to integer data type uniformly in accordance with the compression config.
@@ -427,13 +466,14 @@ def do_int_quantization(
         weight = weight.astype(TensorDataType.float32)
 
     END_TO_END_COMPRESSION = bool(int(os.environ.get("END_TO_END_COMPRESSION", "0")))
-    if not END_TO_END_COMPRESSION or group_size != -1:
+    COMPARE_WITH_NUMPY = bool(int(os.environ.get("COMPARE_WITH_NUMPY", "0")))
+    if not END_TO_END_COMPRESSION or group_size != -1 or COMPARE_WITH_NUMPY:
         if group_size != -1:
             # weights are reshaped from [a1, r, a2] to [a1, r//gs, gs, a2]
             weight, reduction_axes = reshape_weight_for_grouped_quantization(weight, reduction_axes, group_size)
 
         if precomputed_zero_point is None or precomputed_scale is None:
-            scale, zero_point = calculate_integer_quantization_params(weight, reduction_axes, config)
+            scale, zero_point = calculate_integer_quantization_params(weight, reduction_axes, config, invert_division)
         if precomputed_scale is not None:
             scale = precomputed_scale
         if precomputed_zero_point is not None:
@@ -441,7 +481,7 @@ def do_int_quantization(
     else:
         scale = zero_point = None
 
-    compressed_weights, scale, zero_point = calculate_quantized_weight(weight, config, scale, zero_point, reduction_axes, invert_scale)
+    compressed_weights, scale, zero_point = calculate_quantized_weight(weight, config, scale, zero_point, reduction_axes, invert_division)
     return compressed_weights, scale, zero_point
 
 
@@ -494,8 +534,10 @@ def compress_weight(
             weight, reduction_axes, config.group_size, precomputed_scale, config.mode
         )
         return CompressedWeight(compressed_weight, scale)
+
+    INVERT_NUMPY_DIVISION = bool(int(os.environ.get("INVERT_NUMPY_DIVISION", "0")))
     compressed_weight, scale, zero_point = do_int_quantization(
-        weight, reduction_axes, config, precomputed_scale, precomputed_zero_point
+        weight, reduction_axes, config, precomputed_scale, precomputed_zero_point, invert_division=INVERT_NUMPY_DIVISION
     )
 
     return CompressedWeight(compressed_weight, scale, zero_point)

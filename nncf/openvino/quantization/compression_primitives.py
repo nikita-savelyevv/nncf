@@ -31,7 +31,6 @@ class OVCompressionPrimitiveCache:
         config: WeightCompressionConfig,
         weight_shape: Tuple,
         reduction_axes: Optional[Tuple],
-        invert_scale: Optional[bool] = False,
     ):
         DYNAMIC_COMPRESSION = bool(int(os.environ.get("DYNAMIC_COMPRESSION", "0")))
         if DYNAMIC_COMPRESSION:
@@ -39,11 +38,11 @@ class OVCompressionPrimitiveCache:
 
         recompile = bool(int(os.environ.get("RECOMPILE", "0")))
         if recompile:
-            return self._build_compress_model_end_to_end(config, weight_shape, reduction_axes, invert_scale)
-        key = (config.mode, config.num_bits, weight_shape, reduction_axes, invert_scale)
+            return self._build_compress_model_end_to_end(config, weight_shape, reduction_axes)
+        key = (config.mode, config.num_bits, weight_shape, reduction_axes)
         if key not in self._compress_weight_end_to_end_model_cache:
             self._compress_weight_end_to_end_model_cache[key] = self._build_compress_model_end_to_end(
-                config, weight_shape, reduction_axes, invert_scale
+                config, weight_shape, reduction_axes
             )
         return self._compress_weight_end_to_end_model_cache[key]
 
@@ -53,7 +52,6 @@ class OVCompressionPrimitiveCache:
         weight_shape: Tuple,
         scale_shape: Tuple,
         zero_point_shape: Optional[Tuple] = None,
-        invert_scale: Optional[bool] = False,
     ):
         DYNAMIC_COMPRESSION = bool(int(os.environ.get("DYNAMIC_COMPRESSION", "0")))
         if DYNAMIC_COMPRESSION:
@@ -64,13 +62,13 @@ class OVCompressionPrimitiveCache:
 
         recompile = bool(int(os.environ.get("RECOMPILE", "0")))
         if recompile:
-            return self._build_compress_model(config, weight_shape, scale_shape, zero_point_shape, invert_scale)
-        key = (config.mode, config.num_bits, weight_shape, scale_shape, invert_scale)
+            return self._build_compress_model(config, weight_shape, scale_shape, zero_point_shape)
+        key = (config.mode, config.num_bits, weight_shape, scale_shape)
         if zero_point_shape is not None:
             key += (zero_point_shape,)
         if key not in self._compress_weight_model_cache:
             self._compress_weight_model_cache[key] = self._build_compress_model(
-                config, weight_shape, scale_shape, zero_point_shape, invert_scale
+                config, weight_shape, scale_shape, zero_point_shape
             )
         return self._compress_weight_model_cache[key]
 
@@ -81,7 +79,6 @@ class OVCompressionPrimitiveCache:
         reduction_axes: Optional[Tuple] = None,
         scale_shape: Optional[Tuple] = None,
         zero_point_shape: Optional[Tuple] = None,
-        invert_scale: Optional[bool] = False,
     ):
         DYNAMIC_COMPRESSION = bool(int(os.environ.get("DYNAMIC_COMPRESSION", "0")))
         if DYNAMIC_COMPRESSION:
@@ -94,7 +91,7 @@ class OVCompressionPrimitiveCache:
         recompile = bool(int(os.environ.get("RECOMPILE", "0")))
         if recompile:
             return self._build_compress_decompress_model(config, weight_shape, reduction_axes, scale_shape, zero_point_shape)
-        key = (config.mode, config.num_bits, weight_shape, invert_scale)
+        key = (config.mode, config.num_bits, weight_shape)
         if reduction_axes is not None:
             key += (reduction_axes,)
         if scale_shape is not None:
@@ -103,7 +100,7 @@ class OVCompressionPrimitiveCache:
             key += (zero_point_shape,)
         if key not in self._compress_decompress_weight_model_cache:
             self._compress_decompress_weight_model_cache[key] = self._build_compress_decompress_model(
-                config, weight_shape, reduction_axes, scale_shape, zero_point_shape, invert_scale
+                config, weight_shape, reduction_axes, scale_shape, zero_point_shape
             )
         return self._compress_decompress_weight_model_cache[key]
 
@@ -112,7 +109,6 @@ class OVCompressionPrimitiveCache:
         config: WeightCompressionConfig,
         weight_shape: Tuple,
         reduction_axes: Optional[Tuple] = None,
-        invert_scale: Optional[bool] = False,
         return_nodes: bool = False,
     ):
         INPUT_DTYPE = os.environ.get("INPUT_DTYPE", "fp32")
@@ -154,7 +150,7 @@ class OVCompressionPrimitiveCache:
             w_max = opset.reduce_max(weight, reduction_axes=reduction_axes, keep_dims=True)
             w_abs_min, w_max = opset.convert(w_abs_min, ov.Type.f32), opset.convert(w_max, ov.Type.f32)
 
-            scale = opset.select(w_abs_min >= w_max, w_abs_min, -w_max)
+            scale = opset.select(w_abs_min >= w_max, w_abs_min, opset.constant(0, ov.Type.f32) - w_max)
             scale /= level_high
             scale = opset.select(opset.abs(scale) < eps, eps, scale)
 
@@ -165,7 +161,6 @@ class OVCompressionPrimitiveCache:
             scale,
             zero_point,
             output_only_weight=False,
-            invert_scale=invert_scale,
             return_nodes=return_nodes,
         )
 
@@ -175,7 +170,6 @@ class OVCompressionPrimitiveCache:
         weight_shape: Tuple,
         scale_shape: Tuple,
         zero_point_shape: Optional[Tuple] = None,
-        invert_scale: Optional[bool] = False,
         return_nodes: bool = False,
     ):
         INPUT_DTYPE = os.environ.get("INPUT_DTYPE", "fp32")
@@ -189,12 +183,12 @@ class OVCompressionPrimitiveCache:
         else:
             raise Exception
         weight = opset.parameter(weight_shape, name="w", dtype=input_dtype)
-        scale = opset.parameter(scale_shape, name="s")
+        scale = opset.parameter(scale_shape, name="s", dtype=ov.Type.f32)
         parameters = [weight, scale]
 
         zero_point = None
         if config.mode in [CompressWeightsMode.INT8_ASYM, config.mode.INT4_ASYM]:
-            zero_point = opset.parameter(zero_point_shape, name="zp")
+            zero_point = opset.parameter(zero_point_shape, name="zp", dtype=ov.Type.f32)
             parameters.append(zero_point)
 
         return OVCompressionPrimitiveCache._get_compress_model(
@@ -204,7 +198,6 @@ class OVCompressionPrimitiveCache:
             scale,
             zero_point,
             output_only_weight=True,
-            invert_scale=invert_scale,
             return_nodes=return_nodes,
         )
 
@@ -213,10 +206,9 @@ class OVCompressionPrimitiveCache:
         config: WeightCompressionConfig,
         weight_shape: Tuple,
         reduction_axes: Optional[Tuple] = None,
-        invert_scale: Optional[bool] = False,
     ):
         parameters, results = OVCompressionPrimitiveCache._build_compress_model_end_to_end(
-            config, weight_shape, reduction_axes, invert_scale, return_nodes=True
+            config, weight_shape, reduction_axes, return_nodes=True
         )
         # `results` holds compressed weight, scale and, possibly, zero point
         return OVCompressionPrimitiveCache._get_compress_decompress_model(config, parameters, results)
@@ -242,13 +234,12 @@ class OVCompressionPrimitiveCache:
         s: ov.runtime.Node,
         zp: Optional[ov.runtime.Node] = None,
         output_only_weight: Optional[bool] = True,
-        invert_scale: Optional[bool] = None,
         return_nodes: Optional[bool] = False,
     ):
         if w.get_element_type() != ov.Type.f32:
             w = opset.convert(w, ov.Type.f32)
 
-        compressed_w = w * (1 / s) if invert_scale else w / s
+        compressed_w = w / s
 
         num_bits = config.num_bits
         if config.mode in [CompressWeightsMode.INT8_ASYM, config.mode.INT4_ASYM]:
