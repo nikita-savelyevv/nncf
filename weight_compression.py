@@ -38,13 +38,13 @@ def parse_arguments():
 
     parser.add_argument("--end-to-end", action="store_true", help="Enable end-to-end OV compression")
 
-    parser.add_argument("--input-dtype", type=str, choices=["fp32", "fp16", "bf16"], default="fp32", help="OV model input dtype")
+    parser.add_argument("--input-dtype", type=str, choices=["fp32", "fp16", "bf16"], default=None, help="OV model input dtype")
 
-    parser.add_argument("--int8-output", action="store_true", help="Output in (u)int8")
+    parser.add_argument("--fp32-output", action="store_true", help="Output in fp32 instead of (u)int8")
 
     parser.add_argument("--recompile", action="store_true", help="Recompile model every time")
 
-    parser.add_argument("--not-shared-outputs", action="store_true", help="Do not share outputs")
+    parser.add_argument("--share-outputs", action="store_true", help="Share OV model outputs")
 
     parser.add_argument("--save-model", action="store_true", help="Save compressed model")
 
@@ -63,6 +63,19 @@ def log(mm, fz, log_dir):
     )
 
 
+def count_node_dtypes(model):
+    # Get the main dtype of weight constants
+    node_count_per_dtype = dict(f32=0, f16=0, bf16=0)
+    for node in model.get_ordered_ops():
+        friendly_name = node.get_friendly_name()
+        if node.get_type_name() != "Constant" or ".weight" not in friendly_name:
+            continue
+        const_dtype = node.get_element_type().get_type_name()
+        if const_dtype in node_count_per_dtype:
+            node_count_per_dtype[const_dtype] = node_count_per_dtype[const_dtype] + 1
+    return node_count_per_dtype
+
+
 def main(args):
     model_path = Path(args.model_path)
     log_dir = Path(args.log_dir)
@@ -71,26 +84,32 @@ def main(args):
     dynamic_compression = args.dynamic
     end_to_end_compression = args.end_to_end
     input_dtype = args.input_dtype
-    int8_output = args.int8_output
+    fp32_output = args.fp32_output
     recompile = args.recompile
-    not_shared_outputs = args.not_shared_outputs
+    share_outputs = args.share_outputs
     save_model = args.save_model
     compare_with_numpy = args.compare_with_numpy
     invert_numpy_division = args.invert_numpy_division
     release_memory = args.release_memory
+
+    log_dir_suffix = f"{model_path.parent.name}_"
     if numpy_compression:
-        log_dir_suffix = "numpy"
+        log_dir_suffix = f"{log_dir_suffix}numpy"
         if invert_numpy_division:
             log_dir_suffix += "_inverted"
     else:
-        log_dir_suffix = "end-to-end_" if end_to_end_compression else ""
+        log_dir_suffix = f"{log_dir_suffix}end-to-end_" if end_to_end_compression else ""
         log_dir_suffix = f"{log_dir_suffix}{'ov-dynamic' if dynamic_compression else 'ov-static'}"
-        log_dir_suffix = f"{log_dir_suffix}_{'output-int8' if int8_output else 'output-fp32'}"
-        log_dir_suffix = f"{log_dir_suffix}_{f'input-{input_dtype}'}"
+        log_dir_suffix = f"{log_dir_suffix}_{'output-fp32' if fp32_output else 'output-i8'}"
+        if input_dtype is not None:
+            log_dir_suffix = f"{log_dir_suffix}_{f'input-{input_dtype}'}"
         if recompile:
             log_dir_suffix = f"{log_dir_suffix}_recompile"
-        if not_shared_outputs:
-            log_dir_suffix = f"{log_dir_suffix}_not-shared-outputs"
+        if release_memory:
+            log_dir_suffix = f"{log_dir_suffix}_release-memory"
+        if share_outputs:
+            log_dir_suffix = f"{log_dir_suffix}_share-outputs"
+    print(f"Log dir suffix: {log_dir_suffix}")
 
     memory_monitors = []
     for memory_type, mem_from_zero in [(MemoryType.RSS, False), (MemoryType.SYSTEM, False), (MemoryType.SYSTEM, True)]:
@@ -102,13 +121,22 @@ def main(args):
     # core.set_property({"ENABLE_MMAP": "NO"})
     model = core.read_model(model_path)
 
+    node_count_per_dtype = count_node_dtypes(model)
+    assert max(node_count_per_dtype.values()) == sum(node_count_per_dtype.values()), "Not all consts have the same type"
+    node_count_per_dtype = sorted([(v, k) for k, v in node_count_per_dtype.items()], reverse=True)
+    model_dtype = dict(f32="fp32", f16="fp16", bf16="bf16")[node_count_per_dtype[0][1]]
+
+    # Update input dtype based on model
+    if input_dtype is None:
+        input_dtype = "fp32" if model_dtype == "bf16" else model_dtype
+
     os.environ["NUMPY_COMPRESSION"] = f"{int(numpy_compression)}"
     os.environ["DYNAMIC_COMPRESSION"] = f"{int(dynamic_compression)}"
     os.environ["END_TO_END_COMPRESSION"] = f"{int(end_to_end_compression)}"
     os.environ["INPUT_DTYPE"] = input_dtype
-    os.environ["INT8_OUTPUT"] = f"{int(int8_output)}"
+    os.environ["FP32_OUTPUT"] = f"{int(fp32_output)}"
     os.environ["RECOMPILE"] = f"{int(recompile)}"
-    os.environ["NOT_SHARED_OUTPUTS"] = f"{int(not_shared_outputs)}"
+    os.environ["SHARE_OUTPUTS"] = f"{int(share_outputs)}"
     os.environ["COMPARE_WITH_NUMPY"] = f"{int(compare_with_numpy)}"
     os.environ["INVERT_NUMPY_DIVISION"] = f"{int(invert_numpy_division)}"
     os.environ["RELEASE_MEMORY"] = f"{int(release_memory)}"
@@ -157,8 +185,12 @@ def main(args):
         if not csv_exists:
             f.write(
                 "Model Path,"
+                "Model dtype,"
                 "Backend,"
-                "End-to-end,"
+                "End to end,"
+                "Recompile,"
+                "Release memory,"
+                "Share outputs,"
                 "Input Shapes,"
                 "Input,"
                 "Output,"
@@ -170,11 +202,15 @@ def main(args):
             )
         f.write(
             f"{model_path},"
+            f"{model_dtype.upper()},"
             f"{'NumPy' if numpy_compression else 'OV'},"
-            f"{end_to_end_compression},"
+            f"{'-' if numpy_compression else end_to_end_compression},"
+            f"{'-' if numpy_compression else recompile},"
+            f"{'-' if numpy_compression else release_memory},"
+            f"{'-' if numpy_compression else share_outputs},"
             f"{'-' if numpy_compression else 'Dynamic' if dynamic_compression else 'Static'},"
             f"{'-' if numpy_compression else input_dtype.upper()},"
-            f"{'-' if numpy_compression else 'INT8' if int8_output else 'FP32'},"
+            f"{'-' if numpy_compression else 'FP32' if fp32_output else 'INT8'},"
             f"{compression_time:.2f},"
             f"{peak_memory:.2f},"
             f"{cache_size:.2f},"

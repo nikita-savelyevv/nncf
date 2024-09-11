@@ -256,8 +256,8 @@ class OVCompressionPrimitiveCache:
 
         compressed_w = opset.clamp(opset.round(compressed_w), level_low, level_high, name="compressed_weights")
 
-        INT8_OUTPUT = bool(int(os.environ.get("INT8_OUTPUT", "0")))
-        if INT8_OUTPUT:
+        FP32_OUTPUT = bool(int(os.environ.get("FP32_OUTPUT", "0")))
+        if not FP32_OUTPUT:
             compressed_w = opset.convert(compressed_w, dtype)
 
         results = [compressed_w]
@@ -272,8 +272,8 @@ class OVCompressionPrimitiveCache:
 
         compiled_model = ov.compile_model(model, device_name="CPU")
 
-        NOT_SHARED_OUTPUTS = bool(int(os.environ.get("NOT_SHARED_OUTPUTS", "0")))
-        return compiled_model, lambda parameters: compiled_model(parameters, share_outputs=not NOT_SHARED_OUTPUTS)
+        SHARE_OUTPUTS = bool(int(os.environ.get("SHARE_OUTPUTS", "0")))
+        return compiled_model, lambda parameters: compiled_model(parameters, share_outputs=SHARE_OUTPUTS)
 
     @staticmethod
     def _get_compress_decompress_model(
