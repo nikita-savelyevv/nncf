@@ -303,10 +303,11 @@ def compare_np_to_ov(config, w, w_ov, s, s_ov, zp=None, zp_ov=None):
             return True
         return False
 
+    # --invert-numpy-division should be enabled
     diff_too_large = False
     if w_ov is not None:
-        diff_too_large = compare(w, w_ov, "Weight",
-                                 threshold=0.0 if config.mode == CompressWeightsMode.INT8_SYM else 1.0)
+        sym_mode = config.mode in [CompressWeightsMode.INT8_SYM, CompressWeightsMode.INT4_SYM]
+        diff_too_large = compare(w, w_ov, "Weight", threshold=0.0 if sym_mode else 1.0)
     if s_ov is not None:
         diff_too_large = compare(s, s_ov, "Scale", 0.0) or diff_too_large
     if zp_ov is not None:
@@ -377,6 +378,13 @@ def calculate_quantized_weight(
     if not ov_compression or COMPARE_WITH_NUMPY:
         if weight.dtype != TensorDataType.float32:
             weight = weight.astype(TensorDataType.float32)
+
+        if COMPARE_WITH_NUMPY:
+            if config.group_size != -1:
+                # weights are reshaped from [a1, r, a2] to [a1, r//gs, gs, a2]
+                weight, reduction_axes = reshape_weight_for_grouped_quantization(weight, reduction_axes, config.group_size)
+            if scale is None or zero_point is None:
+                scale, zero_point = calculate_integer_quantization_params(weight, reduction_axes, config, invert_division)
         assert scale.dtype == TensorDataType.float32
 
         num_bits = config.num_bits
@@ -471,7 +479,7 @@ def do_int_quantization(
 
     END_TO_END_COMPRESSION = bool(int(os.environ.get("END_TO_END_COMPRESSION", "0")))
     COMPARE_WITH_NUMPY = bool(int(os.environ.get("COMPARE_WITH_NUMPY", "0")))
-    if not END_TO_END_COMPRESSION or group_size != -1 or COMPARE_WITH_NUMPY:
+    if not END_TO_END_COMPRESSION and not COMPARE_WITH_NUMPY:
         if group_size != -1:
             # weights are reshaped from [a1, r, a2] to [a1, r//gs, gs, a2]
             weight, reduction_axes = reshape_weight_for_grouped_quantization(weight, reduction_axes, group_size)

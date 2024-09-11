@@ -15,6 +15,7 @@ import numpy as np
 import openvino as ov
 from openvino.runtime import opset13 as opset
 
+import nncf
 from nncf import CompressWeightsMode
 from nncf.quantization.algorithms.weight_compression.config import WeightCompressionConfig
 
@@ -124,6 +125,25 @@ class OVCompressionPrimitiveCache:
         weight = opset.parameter(weight_shape, name="w", dtype=input_dtype)
         parameters = [weight]
 
+        group_size = config.group_size
+        if group_size != -1:
+            if isinstance(reduction_axes, tuple) and len(reduction_axes) == 1:
+                reduction_axes = reduction_axes[0]
+            if not isinstance(reduction_axes, int):
+                raise NotImplementedError(
+                    f"Group-wise quantization expects a single reduction axis, but given: {reduction_axes}."
+                )
+            channel_size = weight.shape[reduction_axes]
+            if channel_size % group_size != 0:
+                raise nncf.ValidationError(
+                    f"Channel size {channel_size} should be divisible by size of group {group_size}")
+
+            num_groups_per_channel = channel_size // group_size
+            shape = list(weight.shape)  # [a1, r, a2] - "r" refers to number of channels along reduction axis
+            shape[reduction_axes: reduction_axes + 1] = (num_groups_per_channel, group_size)
+            weight = opset.reshape(weight, shape, special_zero=False)
+            reduction_axes += 1
+
         mode = config.mode
         num_bits = config.num_bits
         eps = np.finfo(np.float32).eps
@@ -188,7 +208,7 @@ class OVCompressionPrimitiveCache:
 
         zero_point = None
         if config.mode in [CompressWeightsMode.INT8_ASYM, config.mode.INT4_ASYM]:
-            zero_point = opset.parameter(zero_point_shape, name="zp", dtype=ov.Type.f32)
+            zero_point = opset.parameter(zero_point_shape, name="zp", dtype=ov.Type.i32)
             parameters.append(zero_point)
 
         return OVCompressionPrimitiveCache._get_compress_model(
@@ -243,12 +263,12 @@ class OVCompressionPrimitiveCache:
 
         num_bits = config.num_bits
         if config.mode in [CompressWeightsMode.INT8_ASYM, config.mode.INT4_ASYM]:
-            dtype = ov.Type.u8 if config.mode == CompressWeightsMode.INT8_ASYM else ov.Type.u4
+            dtype = ov.Type.u8
             level_low = 0
             level_high = 2**num_bits - 1
-            compressed_w += zp
+            compressed_w += opset.convert(zp, ov.Type.f32)
         elif config.mode in [CompressWeightsMode.INT8_SYM, config.mode.INT4_SYM]:
-            dtype = ov.Type.i8 if config.mode == CompressWeightsMode.INT8_SYM else ov.Type.i4
+            dtype = ov.Type.i8
             level_low = -(2 ** (num_bits - 1))
             level_high = 2 ** (num_bits - 1) - 1
         else:
@@ -264,7 +284,7 @@ class OVCompressionPrimitiveCache:
         if not output_only_weight:
             results.append(s)
             if zp is not None:
-                results.append(zp)
+                results.append(opset.convert(zp, ov.Type.i32))
         if return_nodes:
             return parameters, results
 

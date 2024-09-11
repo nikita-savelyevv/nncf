@@ -16,7 +16,26 @@ parent_model_dir = Path("/home/nsavel/workspace/openvino.genai/llm_bench/python/
 parent_log_dir = Path("compression_logs")
 
 experiment_params = [
-    (parent_model_dir / "tiny-llama/pytorch/dldt/FP32", parent_log_dir / "tmp", "--numpy"),
+    (parent_model_dir / "tiny-llama/pytorch/dldt/FP32", parent_log_dir / "int4_asym/tiny-llama", "--save-model --compression-mode int4_asym --numpy"),
+    (parent_model_dir / "tiny-llama/pytorch/dldt/FP32", parent_log_dir / "int4_asym/tiny-llama", "--save-model --compression-mode int4_asym --end-to-end --release-memory"),
+    (parent_model_dir / "tiny-llama/pytorch/dldt/FP16", parent_log_dir / "int4_asym/tiny-llama", "--save-model --compression-mode int4_asym --numpy"),
+    (parent_model_dir / "tiny-llama/pytorch/dldt/FP16", parent_log_dir / "int4_asym/tiny-llama", "--save-model --compression-mode int4_asym --end-to-end --release-memory"),
+    (parent_model_dir / "tiny-llama/pytorch/dldt/BF16", parent_log_dir / "int4_asym/tiny-llama", "--save-model --compression-mode int4_asym --numpy"),
+    (parent_model_dir / "tiny-llama/pytorch/dldt/BF16", parent_log_dir / "int4_asym/tiny-llama", "--save-model --compression-mode int4_asym --end-to-end --share-outputs --recompile --input-dtype fp32"),
+    
+    (parent_model_dir / "phi3-mini-4k-instruct/pytorch/dldt/FP32", parent_log_dir / "int4_asym/phi3", "--compression-mode int4_asym --numpy"),
+    (parent_model_dir / "phi3-mini-4k-instruct/pytorch/dldt/FP32", parent_log_dir / "int4_asym/phi3", "--compression-mode int4_asym --end-to-end --release-memory"),
+    (parent_model_dir / "phi3-mini-4k-instruct/pytorch/dldt/FP16", parent_log_dir / "int4_asym/phi3", "--compression-mode int4_asym --numpy"),
+    (parent_model_dir / "phi3-mini-4k-instruct/pytorch/dldt/FP16", parent_log_dir / "int4_asym/phi3", "--compression-mode int4_asym --end-to-end --release-memory"),
+    (parent_model_dir / "phi3-mini-4k-instruct/pytorch/dldt/BF16", parent_log_dir / "int4_asym/phi3", "--compression-mode int4_asym --numpy"),
+    (parent_model_dir / "phi3-mini-4k-instruct/pytorch/dldt/BF16", parent_log_dir / "int4_asym/phi3", "--compression-mode int4_asym --end-to-end --share-outputs --recompile --input-dtype fp32"),
+
+    (parent_model_dir / "Meta-Llama-3-8B/pytorch/dldt/optimum-fp32", parent_log_dir / "int4_asym/llama3-8b", "--compression-mode int4_asym --numpy"),
+    (parent_model_dir / "Meta-Llama-3-8B/pytorch/dldt/optimum-fp32", parent_log_dir / "int4_asym/llama3-8b", "--compression-mode int4_asym --end-to-end --release-memory"),
+    (parent_model_dir / "Meta-Llama-3-8B/pytorch/dldt/optimum-fp16", parent_log_dir / "int4_asym/llama3-8b", "--compression-mode int4_asym --numpy"),
+    (parent_model_dir / "Meta-Llama-3-8B/pytorch/dldt/optimum-fp16", parent_log_dir / "int4_asym/llama3-8b", "--compression-mode int4_asym --end-to-end --release-memory"),
+    (parent_model_dir / "Meta-Llama-3-8B/pytorch/dldt/optimum-bf16", parent_log_dir / "int4_asym/llama3-8b", "--compression-mode int4_asym --numpy"),
+    (parent_model_dir / "Meta-Llama-3-8B/pytorch/dldt/optimum-bf16", parent_log_dir / "int4_asym/llama3-8b", "--compression-mode int4_asym --end-to-end --share-outputs --recompile --input-dtype fp32"),
 
     # (parent_model_dir / "tiny-llama/pytorch/dldt/FP32", parent_log_dir / "release_memory_att3/tiny-llama", "--numpy"),
     # (parent_model_dir / "tiny-llama/pytorch/dldt/FP32", parent_log_dir / "release_memory_att3/tiny-llama", "--end-to-end --release-memory"),

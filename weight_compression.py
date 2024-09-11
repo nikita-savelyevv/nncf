@@ -32,6 +32,8 @@ def parse_arguments():
 
     parser.add_argument("--log-dir", default="./compression_logs", type=str, help="Directory where logs will be saved")
 
+    parser.add_argument("--compression-mode", default="int8_asym", type=str, choices=["int8_asym", "int8_sym", "int4_asym", "int4_sym",], help="Weight compression mode")
+
     parser.add_argument("--numpy", action="store_true", help="Enable numpy compression")
 
     parser.add_argument("--dynamic", action="store_true", help="Enable compression with dynamic-shaped OV models")
@@ -142,7 +144,17 @@ def main(args):
     os.environ["RELEASE_MEMORY"] = f"{int(release_memory)}"
 
     start_time = time.perf_counter()
-    compressed_model = nncf.compress_weights(model, mode=nncf.CompressWeightsMode.INT8_ASYM)
+    if args.compression_mode == "int8_asym":
+        compression_mode = nncf.CompressWeightsMode.INT8_ASYM
+    elif args.compression_mode == "int8_sym":
+        compression_mode = nncf.CompressWeightsMode.INT8_SYM
+    elif args.compression_mode == "int4_asym":
+        compression_mode = nncf.CompressWeightsMode.INT4_ASYM
+    elif args.compression_mode == "int4_sym":
+        compression_mode = nncf.CompressWeightsMode.INT4_SYM
+    else:
+        raise ValueError(f"Unknown weight compression mode argument: {args.compression_mode}")
+    compressed_model = nncf.compress_weights(model, mode=compression_mode)
     compression_time = time.perf_counter() - start_time
     print(f"Compression Time: {compression_time:.2f} sec.")
 
