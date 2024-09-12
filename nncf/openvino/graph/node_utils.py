@@ -115,15 +115,8 @@ def get_const_value(const_node: ov.Node) -> np.ndarray:
     :param const_node: OpenVINO node.
     :return: The constant value.
     """
-    if const_node.get_element_type() == ov.Type.bf16:
-        INPUT_DTYPE = os.environ.get("INPUT_DTYPE", "fp32")
-        if INPUT_DTYPE == "bf16":
-            ov_tensor = ov.Tensor(const_node.output(0))
-            assert ov_tensor.element_type == ov.Type.bf16
-            # ov_tensor_bytes = ov_tensor.data.tobytes()
-            # assert all(map(lambda b: b == ov_tensor_bytes[0], ov_tensor_bytes))
-            # exit(0)
-            return ov_tensor
+    INPUT_DTYPE = os.environ.get("INPUT_DTYPE", "fp32")
+    if const_node.get_element_type() == ov.Type.bf16 and INPUT_DTYPE != "bf16":
         # Fixed FP32 data type as the result for BF16 constant
         return const_node.get_data(dtype=np.float32)
     return const_node.data

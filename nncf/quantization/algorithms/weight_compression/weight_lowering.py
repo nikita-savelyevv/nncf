@@ -346,12 +346,19 @@ def calculate_quantized_weight(
     NUMPY_COMPRESSION = bool(int(os.environ.get("NUMPY_COMPRESSION", "0")))
     END_TO_END_COMPRESSION = bool(int(os.environ.get("END_TO_END_COMPRESSION", "0")))
     COMPARE_WITH_NUMPY = bool(int(os.environ.get("COMPARE_WITH_NUMPY", "0")))
+    INPUT_DTYPE = os.environ.get("INPUT_DTYPE", "fp32")
     ov_compression = weight.backend in [TensorBackend.numpy, TensorBackend.ov] and is_openvino_available() and not NUMPY_COMPRESSION
     compressed_weights_ov, scale_ov, zero_point_ov = None, None, None
     if ov_compression:
         from nncf.openvino.quantization.compression_primitives import OV_COMPRESSION_PRIMITIVE_CACHE
 
-        input_tensors = (weight.data,)
+        if INPUT_DTYPE == "bf16":
+            import openvino as ov
+            assert weight.data.dtype == np.float16
+            weight_data = ov.Tensor(weight.data, weight.data.shape, ov.Type.bf16)
+        else:
+            weight_data = weight.data
+        input_tensors = (weight_data,)
         if not END_TO_END_COMPRESSION:
             zero_point_shape = None if zero_point is None else zero_point.shape
             compiled_model, compress_weight_primitive = OV_COMPRESSION_PRIMITIVE_CACHE.get_compress_weight_primitive(
@@ -379,7 +386,17 @@ def calculate_quantized_weight(
         if weight.dtype != TensorDataType.float32:
             weight = weight.astype(TensorDataType.float32)
 
-        if COMPARE_WITH_NUMPY:
+        if INPUT_DTYPE == "bf16" and COMPARE_WITH_NUMPY:
+            # We need such workaround because `weight` actually contains bf16 data
+            MODEL_PATH = os.environ.get("MODEL_PATH")
+            CURRENT_NODE_NAME = os.environ.get("CURRENT_NODE_NAME")
+            import openvino as ov
+            model = ov.Core().read_model(MODEL_PATH)
+            name_to_node_mapping = {node.get_friendly_name(): node for node in model.get_ordered_ops()}
+            weight_node = name_to_node_mapping[CURRENT_NODE_NAME]
+            weight = Tensor(weight_node.get_data(dtype=np.float32))
+
+        if COMPARE_WITH_NUMPY and scale is None:
             if config.group_size != -1:
                 # weights are reshaped from [a1, r, a2] to [a1, r//gs, gs, a2]
                 weight, reduction_axes = reshape_weight_for_grouped_quantization(weight, reduction_axes, config.group_size)

@@ -284,6 +284,8 @@ class OVWeightCompressionAlgoBackend(WeightCompressionAlgoBackend):
             layer_zero_points = (
                 None if precomputed_zero_points is None else precomputed_zero_points.get(wc_params.weight_name)
             )
+            import os
+            os.environ["CURRENT_NODE_NAME"] = wc_params.weight_name
             mul, compressed_weight = self._create_compression_subgraph(
                 weight=weight,
                 compression_config=wc_params.compression_config,

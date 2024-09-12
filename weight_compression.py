@@ -91,7 +91,7 @@ def main(args):
     share_outputs = args.share_outputs
     save_model = args.save_model
     compare_with_numpy = args.compare_with_numpy
-    invert_numpy_division = args.invert_numpy_division
+    invert_numpy_division = args.invert_numpy_division or compare_with_numpy
     release_memory = args.release_memory
 
     log_dir_suffix = f"{model_path.parent.name}_"
@@ -100,7 +100,7 @@ def main(args):
         if invert_numpy_division:
             log_dir_suffix += "_inverted"
     else:
-        log_dir_suffix = f"{log_dir_suffix}end-to-end_" if end_to_end_compression else ""
+        log_dir_suffix = f"{log_dir_suffix}{'end-to-end_' if end_to_end_compression else ''}"
         log_dir_suffix = f"{log_dir_suffix}{'ov-dynamic' if dynamic_compression else 'ov-static'}"
         log_dir_suffix = f"{log_dir_suffix}_{'output-fp32' if fp32_output else 'output-i8'}"
         if input_dtype is not None:
@@ -129,9 +129,9 @@ def main(args):
     model_dtype = dict(f32="fp32", f16="fp16", bf16="bf16")[node_count_per_dtype[0][1]]
 
     # Update input dtype based on model
-    if input_dtype is None:
-        input_dtype = "fp32" if model_dtype == "bf16" else model_dtype
+    input_dtype = input_dtype or model_dtype
 
+    os.environ["MODEL_PATH"] = str(model_path)
     os.environ["NUMPY_COMPRESSION"] = f"{int(numpy_compression)}"
     os.environ["DYNAMIC_COMPRESSION"] = f"{int(dynamic_compression)}"
     os.environ["END_TO_END_COMPRESSION"] = f"{int(end_to_end_compression)}"
