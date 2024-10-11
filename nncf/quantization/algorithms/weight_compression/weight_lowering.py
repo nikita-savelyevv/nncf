@@ -421,7 +421,7 @@ def calculate_quantized_weight(
         compressed_weights = compressed_weights_ov
 
     dtype = TensorDataType.uint8 if asym_quant else TensorDataType.int8
-    if compressed_weights.dtype != dtype:
+    if isinstance(compressed_weights.data, np.ndarray) and compressed_weights.dtype != dtype:
         compressed_weights = compressed_weights.astype(dtype)
     if scale_ov is not None:
         scale, zero_point = scale_ov, zero_point_ov

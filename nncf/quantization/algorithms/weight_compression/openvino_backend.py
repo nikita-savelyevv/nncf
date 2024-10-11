@@ -226,21 +226,38 @@ class OVWeightCompressionAlgoBackend(WeightCompressionAlgoBackend):
         original_shape = weight.shape
         compressed_weight = compress_weight(weight, reduction_axes, compression_config, layer_scales, layer_zero_points)
 
-        compressed_const = opset.constant(compressed_weight.tensor.data, dtype=compression_dtype, name=const_node_name)
+        compressed_weight_data = compressed_weight.tensor.data
+        if isinstance(compressed_weight_data, ov.Tensor):
+            compressed_const = opset.constant(compressed_weight_data, name=const_node_name)
+        else:
+            compressed_const = opset.constant(compressed_weight_data, dtype=compression_dtype, name=const_node_name)
+        if compressed_const.get_element_type() != compression_dtype:
+            compressed_const = opset.convert(compressed_const, compression_dtype)
         converted_const = opset.convert(compressed_const, ov.Type.f16)
-        if compressed_weight.zero_point is not None and compressed_weight.tensor.dtype == TensorDataType.uint8:
-            zero_point_const = opset.constant(
-                compressed_weight.zero_point.data,
-                dtype=compression_dtype,
-                name=f"{const_node_name}/zero_point",
-            )
-            converted_zero_point = opset.convert(zero_point_const, ov.Type.f16)
+        if compressed_weight.zero_point is not None:
+            zero_point_data = compressed_weight.zero_point.data
+            if isinstance(zero_point_data, ov.Tensor):
+                zero_point_const = opset.constant(
+                    compressed_weight.zero_point.data,
+                    name=f"{const_node_name}/zero_point",
+                )
+            else:
+                zero_point_const = opset.constant(
+                    compressed_weight.zero_point.data,
+                    dtype=compression_dtype,
+                    name=f"{const_node_name}/zero_point",
+                )
+            zero_point_const = opset.convert(zero_point_const, ov.Type.f16)
             converted_const = opset.subtract(
-                converted_const, converted_zero_point, name=f"{const_node_name}/zero_point/subtract"
+                converted_const, zero_point_const, name=f"{const_node_name}/zero_point/subtract"
             )
 
-        scale_const = opset.constant(compressed_weight.scale.data, dtype=scale_dtype, name=f"{const_node_name}/scale")
-        if scale_dtype != ov.Type.f16:
+        scale_data = compressed_weight.scale.data
+        if isinstance(scale_data, ov.Tensor):
+            scale_const = opset.constant(scale_data, name=f"{const_node_name}/scale")
+        else:
+            scale_const = opset.constant(scale_data, dtype=scale_dtype, name=f"{const_node_name}/scale")
+        if scale_const.get_element_type() != ov.Type.f16:
             scale_const = opset.convert(scale_const, ov.Type.f16)
 
         mul = opset.multiply(

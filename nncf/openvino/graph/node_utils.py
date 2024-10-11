@@ -116,7 +116,8 @@ def get_const_value(const_node: ov.Node) -> np.ndarray:
     :return: The constant value.
     """
     INPUT_DTYPE = os.environ.get("INPUT_DTYPE", "fp32")
-    if const_node.get_element_type() == ov.Type.bf16 and INPUT_DTYPE != "bf16":
+    NUMPY_COMPRESSION = bool(int(os.environ.get("NUMPY_COMPRESSION", "0")))
+    if const_node.get_element_type() == ov.Type.bf16 and (INPUT_DTYPE != "bf16" or NUMPY_COMPRESSION):
         # Fixed FP32 data type as the result for BF16 constant
         return const_node.get_data(dtype=np.float32)
     return const_node.data

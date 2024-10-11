@@ -263,12 +263,14 @@ class OVCompressionPrimitiveCache:
 
         num_bits = config.num_bits
         if config.mode in [CompressWeightsMode.INT8_ASYM, config.mode.INT4_ASYM]:
-            dtype = ov.Type.u8
+            # dtype = ov.Type.u8
+            dtype = ov.Type.u8 if config.mode == CompressWeightsMode.INT8_ASYM else ov.Type.u4
             level_low = 0
             level_high = 2**num_bits - 1
             compressed_w += opset.convert(zp, ov.Type.f32)
         elif config.mode in [CompressWeightsMode.INT8_SYM, config.mode.INT4_SYM]:
-            dtype = ov.Type.i8
+            # dtype = ov.Type.i8
+            dtype = ov.Type.i8 if config.mode == CompressWeightsMode.INT8_SYM else ov.Type.u4
             level_low = -(2 ** (num_bits - 1))
             level_high = 2 ** (num_bits - 1) - 1
         else:
@@ -282,9 +284,10 @@ class OVCompressionPrimitiveCache:
 
         results = [compressed_w]
         if not output_only_weight:
+            s = opset.convert(s, ov.Type.f16)
             results.append(s)
             if zp is not None:
-                results.append(opset.convert(zp, ov.Type.i32))
+                results.append(opset.convert(zp, compressed_w.get_element_type()))
         if return_nodes:
             return parameters, results
 
@@ -293,7 +296,15 @@ class OVCompressionPrimitiveCache:
         compiled_model = ov.compile_model(model, device_name="CPU")
 
         SHARE_OUTPUTS = bool(int(os.environ.get("SHARE_OUTPUTS", "0")))
-        return compiled_model, lambda parameters: compiled_model(parameters, share_outputs=SHARE_OUTPUTS)
+
+        def infer(inputs):
+            infer_request = compiled_model.create_infer_request()
+            infer_request.infer(inputs, share_outputs=SHARE_OUTPUTS)
+            outputs = [infer_request.get_output_tensor(i) for i in range(len(infer_request.results))]
+            return outputs
+
+        # return compiled_model, lambda parameters: compiled_model(parameters, share_outputs=SHARE_OUTPUTS)
+        return compiled_model, infer
 
     @staticmethod
     def _get_compress_decompress_model(
