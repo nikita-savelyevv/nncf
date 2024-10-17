@@ -8,7 +8,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import inspect
 import os
+from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -20,112 +22,163 @@ from nncf import CompressWeightsMode
 from nncf.quantization.algorithms.weight_compression.config import WeightCompressionConfig
 
 
-class OVCompressionPrimitiveCache:
-    def __init__(self):
-        self._compress_weight_model_cache = {}
-        self._compress_weight_end_to_end_model_cache = {}
-        self._compress_decompress_weight_model_cache = {}
-        self._compress_decompress_end_to_end_weight_model_cache = {}
+@dataclass
+class PrimitiveParameters:
+    dynamic: bool = False
+    recompile: bool = False
+    release_memory: bool = True
+    share_outputs: bool = True
+    input_dtype: str = "fp32"
 
-    def get_compress_weight_primitive_end_to_end(
-        self,
-        config: WeightCompressionConfig,
-        weight_shape: Tuple,
-        reduction_axes: Optional[Tuple],
-    ):
-        DYNAMIC_COMPRESSION = bool(int(os.environ.get("DYNAMIC_COMPRESSION", "0")))
-        if DYNAMIC_COMPRESSION:
-            weight_shape = (-1,) * len(weight_shape)
 
-        recompile = bool(int(os.environ.get("RECOMPILE", "0")))
-        if recompile:
-            return self._build_compress_model_end_to_end(config, weight_shape, reduction_axes)
-        key = (config.mode, config.num_bits, weight_shape, reduction_axes)
-        if key not in self._compress_weight_end_to_end_model_cache:
-            self._compress_weight_end_to_end_model_cache[key] = self._build_compress_model_end_to_end(
-                config, weight_shape, reduction_axes
-            )
-        return self._compress_weight_end_to_end_model_cache[key]
+class CompressionPrimitiveCache:
+    _cache = {}
 
-    def get_compress_weight_primitive(
-        self,
-        config: WeightCompressionConfig,
-        weight_shape: Tuple,
-        scale_shape: Tuple,
-        zero_point_shape: Optional[Tuple] = None,
-    ):
-        DYNAMIC_COMPRESSION = bool(int(os.environ.get("DYNAMIC_COMPRESSION", "0")))
-        if DYNAMIC_COMPRESSION:
-            weight_shape = (-1,) * len(weight_shape)
-            scale_shape = (-1,) * (len(scale_shape) - 1) + (1,)
-            if zero_point_shape is not None:
-                zero_point_shape = (-1,) * (len(zero_point_shape) - 1) + (1,)
 
-        recompile = bool(int(os.environ.get("RECOMPILE", "0")))
-        if recompile:
-            return self._build_compress_model(config, weight_shape, scale_shape, zero_point_shape)
-        key = (config.mode, config.num_bits, weight_shape, scale_shape)
-        if zero_point_shape is not None:
-            key += (zero_point_shape,)
-        if key not in self._compress_weight_model_cache:
-            self._compress_weight_model_cache[key] = self._build_compress_model(
-                config, weight_shape, scale_shape, zero_point_shape
-            )
-        return self._compress_weight_model_cache[key]
+COMPRESSION_PRIMITIVE_CACHE = CompressionPrimitiveCache()
 
-    def get_compress_decompress_weight_primitive(
-        self,
-        config: WeightCompressionConfig,
-        weight_shape: Tuple,
-        reduction_axes: Optional[Tuple] = None,
-        scale_shape: Optional[Tuple] = None,
-        zero_point_shape: Optional[Tuple] = None,
-    ):
-        DYNAMIC_COMPRESSION = bool(int(os.environ.get("DYNAMIC_COMPRESSION", "0")))
-        if DYNAMIC_COMPRESSION:
-            weight_shape = (-1,) * len(weight_shape)
-            if scale_shape is not None:
-                scale_shape = (-1,) * (len(scale_shape) - 1) + (1,)
-            if zero_point_shape is not None:
-                zero_point_shape = (-1,) * (len(zero_point_shape) - 1) + (1,)
 
-        recompile = bool(int(os.environ.get("RECOMPILE", "0")))
-        if recompile:
-            return self._build_compress_decompress_model(
-                config, weight_shape, reduction_axes, scale_shape, zero_point_shape
-            )
-        key = (config.mode, config.num_bits, weight_shape)
-        if reduction_axes is not None:
-            key += (reduction_axes,)
+def clear_cache():
+    COMPRESSION_PRIMITIVE_CACHE._cache = {}
+
+
+def cache_results(func):
+    def wrapper(*args, **kwargs):
+        sig = inspect.signature(func)
+        new_kwargs = {name: arg for name, arg in zip(sig.parameters, args)}
+        new_kwargs.update(kwargs)
+        cache_key = (func.__name__, frozenset(new_kwargs.items()))
+        recompile = new_kwargs.get("params", PrimitiveParameters()).recompile
+        cache = COMPRESSION_PRIMITIVE_CACHE._cache
+        if not recompile and cache_key in cache:
+            return cache[cache_key]
+        result = func(cache, *args, **kwargs)
+        cache[cache_key] = result
+        return result
+
+    return wrapper
+
+
+@cache_results
+def get_compress_weight_primitive(
+    config: WeightCompressionConfig,
+    weight_shape: Tuple,
+    scale_shape: Optional[Tuple] = None,
+    zero_point_shape: Optional[Tuple] = None,
+    reduction_axes: Optional[Tuple] = None,
+    params: Optional[PrimitiveParameters] = None,
+):
+    if scale_shape is None and zero_point_shape is not None:
+        raise Exception("Zero point shape can only be provided if scale shape is provided.")
+    if (scale_shape is None) != (reduction_axes is not None):
+        raise Exception("Either one of scale_shape or reduction_axes must be provided at the same time.")
+
+    if params is None:
+        params = PrimitiveParameters()
+    if config.mode in [CompressWeightsMode.INT4_ASYM, CompressWeightsMode.INT4_SYM]:
+        params.dynamic = False
+
+    if params.dynamic:
+        weight_shape = (-1,) * len(weight_shape)
         if scale_shape is not None:
-            key += (scale_shape,)
+            scale_shape = (-1,) * (len(scale_shape) - 1) + (1,)
         if zero_point_shape is not None:
-            key += (zero_point_shape,)
-        if key not in self._compress_decompress_weight_model_cache:
-            self._compress_decompress_weight_model_cache[key] = self._build_compress_decompress_model(
-                config, weight_shape, reduction_axes, scale_shape, zero_point_shape
-            )
-        return self._compress_decompress_weight_model_cache[key]
+            zero_point_shape = (-1,) * (len(zero_point_shape) - 1) + (1,)
 
-    @staticmethod
-    def _build_compress_model_end_to_end(
-        config: WeightCompressionConfig,
-        weight_shape: Tuple,
-        reduction_axes: Optional[Tuple] = None,
-        return_nodes: bool = False,
-    ):
-        INPUT_DTYPE = os.environ.get("INPUT_DTYPE", "fp32")
+    return _build_compress_model(
+        config,
+        params,
+        weight_shape,
+        scale_shape,
+        zero_point_shape,
+        reduction_axes,
+        return_nodes=False,
+    )
 
-        if INPUT_DTYPE == "fp32":
-            input_dtype = ov.Type.f32
-        elif INPUT_DTYPE == "fp16":
-            input_dtype = ov.Type.f16
-        elif INPUT_DTYPE == "bf16":
-            input_dtype = ov.Type.bf16
-        else:
-            raise Exception
-        weight = opset.parameter(weight_shape, name="w", dtype=input_dtype)
-        parameters = [weight]
+
+@cache_results
+def get_compress_decompress_weight_primitive(
+    config: WeightCompressionConfig,
+    weight_shape: Tuple,
+    scale_shape: Optional[Tuple],
+    zero_point_shape: Optional[Tuple] = None,
+    params: Optional[PrimitiveParameters] = None,
+):
+    if params is None:
+        params = PrimitiveParameters()
+    if config.mode in [CompressWeightsMode.INT4_ASYM, CompressWeightsMode.INT4_SYM]:
+        params.dynamic = False
+
+    if params.dynamic:
+        weight_shape = (-1,) * len(weight_shape)
+        scale_shape = (-1,) * (len(scale_shape) - 1) + (1,)
+        if zero_point_shape is not None:
+            zero_point_shape = (-1,) * (len(zero_point_shape) - 1) + (1,)
+
+    return _build_compress_decompress_model(
+        config,
+        params,
+        weight_shape,
+        scale_shape,
+        zero_point_shape,
+    )
+
+def _build_compress_decompress_model(
+    config: WeightCompressionConfig,
+    params: PrimitiveParameters,
+    weight_shape: Tuple,
+    scale_shape: Tuple,
+    zero_point_shape: Optional[Tuple] = None,
+):
+    ov_parameters, ov_results = _build_compress_model(
+        config,
+        params,
+        weight_shape,
+        scale_shape,
+        zero_point_shape,
+        reduction_axes=None,
+        return_nodes=True
+    )
+    return _get_compress_decompress_model(
+        config,
+        params,
+        ov_parameters,
+        ov_results,
+    )
+
+
+def _build_compress_model(
+    config: WeightCompressionConfig,
+    params: PrimitiveParameters,
+    weight_shape: Tuple,
+    scale_shape: Optional[Tuple] = None,
+    zero_point_shape: Optional[Tuple] = None,
+    reduction_axes: Optional[Tuple] = None,
+    return_nodes: bool = False,
+):
+    if params.input_dtype == "fp32":
+        input_dtype = ov.Type.f32
+    elif params.input_dtype == "fp16":
+        input_dtype = ov.Type.f16
+    elif params.input_dtype == "bf16":
+        input_dtype = ov.Type.bf16
+    else:
+        raise Exception
+    weight = opset.parameter(weight_shape, name="w", dtype=input_dtype)
+    ov_parameters = [weight]
+
+    if scale_shape is not None:
+        # Compute only the compressed weight
+
+        scale = opset.parameter(scale_shape, name="s", dtype=ov.Type.f32)
+        ov_parameters.append(scale)
+
+        zero_point = None
+        if config.mode in [CompressWeightsMode.INT8_ASYM, config.mode.INT4_ASYM]:
+            zero_point = opset.parameter(zero_point_shape, name="zp", dtype=ov.Type.i32)
+            ov_parameters.append(zero_point)
+    else:
+        # Compute compressed weight, scale and, possibly, zero point
 
         group_size = config.group_size
         if group_size != -1:
@@ -143,7 +196,7 @@ class OVCompressionPrimitiveCache:
 
             num_groups_per_channel = channel_size // group_size
             shape = list(weight.shape)  # [a1, r, a2] - "r" refers to number of channels along reduction axis
-            shape[reduction_axes : reduction_axes + 1] = (num_groups_per_channel, group_size)
+            shape[reduction_axes: reduction_axes + 1] = (num_groups_per_channel, group_size)
             weight = opset.reshape(weight, shape, special_zero=False)
             reduction_axes += 1
 
@@ -179,163 +232,102 @@ class OVCompressionPrimitiveCache:
             scale /= level_high
             scale = opset.select(opset.abs(scale) < eps, eps, scale)
 
-        return OVCompressionPrimitiveCache._get_compress_model(
-            config,
-            parameters,
-            weight,
-            scale,
-            zero_point,
-            output_only_weight=False,
-            return_nodes=return_nodes,
-        )
+    return _get_compress_model(
+        config,
+        params,
+        ov_parameters,
+        weight,
+        scale,
+        zero_point,
+        return_nodes,
+    )
 
-    @staticmethod
-    def _build_compress_model(
-        config: WeightCompressionConfig,
-        weight_shape: Tuple,
-        scale_shape: Tuple,
-        zero_point_shape: Optional[Tuple] = None,
-        return_nodes: bool = False,
-    ):
-        INPUT_DTYPE = os.environ.get("INPUT_DTYPE", "fp32")
 
-        if INPUT_DTYPE == "fp32":
-            input_dtype = ov.Type.f32
-        elif INPUT_DTYPE == "fp16":
-            input_dtype = ov.Type.f16
-        elif INPUT_DTYPE == "bf16":
-            input_dtype = ov.Type.bf16
+def _get_compress_model(
+    config: WeightCompressionConfig,
+    params: PrimitiveParameters,
+    ov_parameters: List[ov._pyopenvino.op.Parameter],
+    w: ov.runtime.Node,
+    s: ov.runtime.Node,
+    zp: Optional[ov.runtime.Node] = None,
+    return_nodes: Optional[bool] = False,
+):
+    if w.get_element_type() != ov.Type.f32:
+        w = opset.convert(w, ov.Type.f32)
+
+    compressed_w = w / s
+
+    num_bits = config.num_bits
+    if config.mode in [CompressWeightsMode.INT8_ASYM, config.mode.INT4_ASYM]:
+        # dtype = ov.Type.u8
+        dtype = ov.Type.u8 if config.mode == CompressWeightsMode.INT8_ASYM else ov.Type.u4
+        level_low = 0
+        level_high = 2**num_bits - 1
+        compressed_w += opset.convert(zp, ov.Type.f32)
+    elif config.mode in [CompressWeightsMode.INT8_SYM, config.mode.INT4_SYM]:
+        # dtype = ov.Type.i8
+        dtype = ov.Type.i8 if config.mode == CompressWeightsMode.INT8_SYM else ov.Type.u4
+        level_low = -(2 ** (num_bits - 1))
+        level_high = 2 ** (num_bits - 1) - 1
+    else:
+        raise Exception
+
+    compressed_w = opset.clamp(opset.round(compressed_w), level_low, level_high)
+    compressed_w = opset.convert(compressed_w, dtype, name="compressed_weights")
+
+    ov_results = [compressed_w]
+    if len(ov_parameters) == 1:
+        ov_results.append(s)
+        if zp is not None:
+            ov_results.append(opset.convert(zp, compressed_w.get_element_type()))
+
+    if return_nodes:
+        return ov_parameters, ov_results
+
+    model = ov.Model(ov_results, ov_parameters)
+    compiled_model = ov.compile_model(model, device_name="CPU")
+
+    def infer(inputs):
+        infer_request = compiled_model.create_infer_request()
+        infer_request.infer(inputs, share_outputs=params.share_outputs)
+        outputs = [infer_request.get_output_tensor(i) for i in range(len(infer_request.results))]
+        if params.release_memory:
+            compiled_model.release_memory()
+        return outputs
+
+    return infer
+
+
+def _get_compress_decompress_model(
+    config: WeightCompressionConfig,
+    params: PrimitiveParameters,
+    parameters: List[ov._pyopenvino.op.Parameter],
+    results: List[ov._pyopenvino.Node],
+):
+    if config.mode in [CompressWeightsMode.INT8_ASYM, config.mode.INT4_ASYM]:
+        if len(results) == 1:
+            compressed_w = results[0]
+            s, zp = parameters[1], parameters[2]
         else:
-            raise Exception
-        weight = opset.parameter(weight_shape, name="w", dtype=input_dtype)
-        scale = opset.parameter(scale_shape, name="s", dtype=ov.Type.f32)
-        parameters = [weight, scale]
-
-        zero_point = None
-        if config.mode in [CompressWeightsMode.INT8_ASYM, config.mode.INT4_ASYM]:
-            zero_point = opset.parameter(zero_point_shape, name="zp", dtype=ov.Type.i32)
-            parameters.append(zero_point)
-
-        return OVCompressionPrimitiveCache._get_compress_model(
-            config,
-            parameters,
-            weight,
-            scale,
-            zero_point,
-            output_only_weight=True,
-            return_nodes=return_nodes,
-        )
-
-    @staticmethod
-    def _build_compress_decompress_model_end_to_end(
-        config: WeightCompressionConfig,
-        weight_shape: Tuple,
-        reduction_axes: Optional[Tuple] = None,
-    ):
-        parameters, results = OVCompressionPrimitiveCache._build_compress_model_end_to_end(
-            config, weight_shape, reduction_axes, return_nodes=True
-        )
-        # `results` holds compressed weight, scale and, possibly, zero point
-        return OVCompressionPrimitiveCache._get_compress_decompress_model(config, parameters, results)
-
-    @staticmethod
-    def _build_compress_decompress_model(
-        config: WeightCompressionConfig,
-        weight_shape: Tuple,
-        scale_shape: Tuple,
-        zero_point_shape: Optional[Tuple] = None,
-    ):
-        parameters, results = OVCompressionPrimitiveCache._build_compress_model(
-            config, weight_shape, scale_shape, zero_point_shape, return_nodes=True
-        )
-        # `results` holds only compressed weight
-        return OVCompressionPrimitiveCache._get_compress_decompress_model(config, parameters, results)
-
-    @staticmethod
-    def _get_compress_model(
-        config: WeightCompressionConfig,
-        parameters: List[ov._pyopenvino.op.Parameter],
-        w: ov.runtime.Node,
-        s: ov.runtime.Node,
-        zp: Optional[ov.runtime.Node] = None,
-        output_only_weight: Optional[bool] = True,
-        return_nodes: Optional[bool] = False,
-    ):
-        if w.get_element_type() != ov.Type.f32:
-            w = opset.convert(w, ov.Type.f32)
-
-        compressed_w = w / s
-
-        num_bits = config.num_bits
-        if config.mode in [CompressWeightsMode.INT8_ASYM, config.mode.INT4_ASYM]:
-            # dtype = ov.Type.u8
-            dtype = ov.Type.u8 if config.mode == CompressWeightsMode.INT8_ASYM else ov.Type.u4
-            level_low = 0
-            level_high = 2**num_bits - 1
-            compressed_w += opset.convert(zp, ov.Type.f32)
-        elif config.mode in [CompressWeightsMode.INT8_SYM, config.mode.INT4_SYM]:
-            # dtype = ov.Type.i8
-            dtype = ov.Type.i8 if config.mode == CompressWeightsMode.INT8_SYM else ov.Type.u4
-            level_low = -(2 ** (num_bits - 1))
-            level_high = 2 ** (num_bits - 1) - 1
+            compressed_w, s, zp = results
+        decompressed_w = (compressed_w - zp) * s
+    else:
+        if len(results) == 1:
+            compressed_w = results[0]
+            s = parameters[1]
         else:
-            raise Exception
+            compressed_w, s = results
+        decompressed_w = compressed_w * s
 
-        compressed_w = opset.clamp(opset.round(compressed_w), level_low, level_high, name="compressed_weights")
+    model = ov.Model([decompressed_w], parameters)
+    compiled_model = ov.compile_model(model, device_name="CPU")
 
-        FP32_OUTPUT = bool(int(os.environ.get("FP32_OUTPUT", "0")))
-        if not FP32_OUTPUT:
-            compressed_w = opset.convert(compressed_w, dtype)
+    def infer(inputs):
+        infer_request = compiled_model.create_infer_request()
+        infer_request.infer(inputs, share_outputs=params.share_outputs)
+        outputs = [infer_request.get_output_tensor(i) for i in range(len(infer_request.results))]
+        if params.release_memory:
+            compiled_model.release_memory()
+        return outputs
 
-        results = [compressed_w]
-        if not output_only_weight:
-            s = opset.convert(s, ov.Type.f16)
-            results.append(s)
-            if zp is not None:
-                results.append(opset.convert(zp, compressed_w.get_element_type()))
-        if return_nodes:
-            return parameters, results
-
-        model = ov.Model(results, parameters)
-
-        compiled_model = ov.compile_model(model, device_name="CPU")
-
-        SHARE_OUTPUTS = bool(int(os.environ.get("SHARE_OUTPUTS", "0")))
-
-        def infer(inputs):
-            infer_request = compiled_model.create_infer_request()
-            infer_request.infer(inputs, share_outputs=SHARE_OUTPUTS)
-            outputs = [infer_request.get_output_tensor(i) for i in range(len(infer_request.results))]
-            return outputs
-
-        # return compiled_model, lambda parameters: compiled_model(parameters, share_outputs=SHARE_OUTPUTS)
-        return compiled_model, infer
-
-    @staticmethod
-    def _get_compress_decompress_model(
-        config: WeightCompressionConfig,
-        parameters: List[ov._pyopenvino.op.Parameter],
-        results: List[ov._pyopenvino.op.Parameter],
-    ):
-        if config.mode in [CompressWeightsMode.INT8_ASYM, config.mode.INT4_ASYM]:
-            if len(results) == 1:
-                compressed_w = results[0]
-                s, zp = parameters[1], parameters[2]
-            else:
-                compressed_w, s, zp = results
-            decompressed_w = (compressed_w - zp) * s
-        else:
-            if len(results) == 1:
-                compressed_w = results[0]
-                s = parameters[1]
-            else:
-                compressed_w, s = results
-            decompressed_w = compressed_w * s
-
-        model = ov.Model([decompressed_w], parameters)
-        compiled_model = ov.compile_model(model, device_name="CPU")
-
-        return lambda parameters: compiled_model(parameters)[0]
-
-
-OV_COMPRESSION_PRIMITIVE_CACHE = OVCompressionPrimitiveCache()
+    return infer
