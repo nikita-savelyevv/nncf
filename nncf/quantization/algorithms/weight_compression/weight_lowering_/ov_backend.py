@@ -20,8 +20,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 import inspect
-import os
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
@@ -32,10 +32,14 @@ from openvino.runtime import opset13 as opset
 import nncf
 from nncf import CompressWeightsMode
 from nncf.quantization.algorithms.weight_compression.config import WeightCompressionConfig
+from nncf.tensor import Tensor
+
+from .weight_lowering_dispatcher import WeightLoweringBackend
+from .dispatched_functions import do_int_quantization, calculate_quantized_dequantized_weight
 
 
 @dataclass
-class PrimitiveParameters:
+class OVModelParameters:
     dynamic: bool = False
     recompile: bool = False
     release_memory: bool = True
@@ -43,15 +47,19 @@ class PrimitiveParameters:
     input_dtype: str = "fp32"
 
 
-class CompressionPrimitiveCache:
-    _cache = {}
+class CompiledModelCache:
+    def __init__(self):
+        self._cache = {}
+    
+    def clear(self):
+        self._cache.clear()
 
 
-COMPRESSION_PRIMITIVE_CACHE = CompressionPrimitiveCache()
+COMPILED_MODEL_CACHE = CompiledModelCache()
 
 
 def clear_cache():
-    COMPRESSION_PRIMITIVE_CACHE._cache = {}
+    COMPILED_MODEL_CACHE.clear()
 
 
 def cache_results(func):
@@ -60,8 +68,8 @@ def cache_results(func):
         new_kwargs = {name: arg for name, arg in zip(sig.parameters, args)}
         new_kwargs.update(kwargs)
         cache_key = (func.__name__, frozenset(new_kwargs.items()))
-        recompile = new_kwargs.get("params", PrimitiveParameters()).recompile
-        cache = COMPRESSION_PRIMITIVE_CACHE._cache
+        recompile = new_kwargs.get("ov_model_params", OVModelParameters()).recompile
+        cache = COMPILED_MODEL_CACHE._cache
         if not recompile and cache_key in cache:
             return cache[cache_key]
         result = func(cache, *args, **kwargs)
@@ -71,26 +79,92 @@ def cache_results(func):
     return wrapper
 
 
+@do_int_quantization.register(WeightLoweringBackend.OV)
+def _(
+    weight: Tensor,
+    reduction_axes: Tuple,
+    config: WeightCompressionConfig,
+    precomputed_scale: Optional[Tensor] = None,
+    precomputed_zero_point: Optional[Tensor] = None,
+    ov_model_params: Optional[OVModelParameters] = None,
+    **kwargs,
+) -> Tuple[Tensor, Tensor, Tensor]:
+    weight_shape = weight.shape
+    scale_shape = None if precomputed_scale is None else precomputed_scale.shape
+    zero_point_shape = None if precomputed_zero_point is None else precomputed_zero_point.shape
+
+    if ov_model_params is None:
+        ov_model_params = OVModelParameters()
+    # TODO: Try reshaping weight before inputing it to the model
+    if config.mode in [CompressWeightsMode.INT4_ASYM, CompressWeightsMode.INT4_SYM]:
+        ov_model_params.dynamic = False
+
+    model = get_compress_weight_model(
+        config,
+        weight_shape,
+        scale_shape,
+        zero_point_shape,
+        reduction_axes,
+        ov_model_params,
+    )
+
+    if precomputed_scale is None:
+        results = model(weight)
+        compressed_weight, scale, zero_point = [Tensor(it) for it in results]
+    else:
+        inputs = [weight, precomputed_scale]
+        if precomputed_zero_point is not None:
+            inputs += [precomputed_zero_point]
+        compressed_weight = Tensor(model(inputs)[0])
+        scale, zero_point = precomputed_scale, precomputed_zero_point
+
+    return compressed_weight, scale, zero_point
+
+
+@calculate_quantized_dequantized_weight.register(WeightLoweringBackend.OV)
+def _(
+    weight: Tensor, config: WeightCompressionConfig, scale: Tensor, zero_point: Optional[Tensor] = None, ov_model_params: Optional[OVModelParameters] = None, **kwargs
+) -> Tensor:
+    weight_shape = weight.shape
+    scale_shape = scale.shape
+    zero_point_shape = None if zero_point is None else zero_point.shape
+
+    if ov_model_params is None:
+        ov_model_params = OVModelParameters()
+    if config.mode in [CompressWeightsMode.INT4_ASYM, CompressWeightsMode.INT4_SYM]:
+        ov_model_params.dynamic = False
+
+    model = get_compress_decompress_weight_model(
+        config,
+        weight_shape,
+        scale_shape,
+        zero_point_shape,
+        ov_model_params
+    )
+
+    inputs = [weight, scale]
+    if zero_point is not None:
+        inputs.append(zero_point)
+    results = model(inputs)
+    decompressed_weight = [Tensor(it) for it in results][0]
+    return decompressed_weight
+
+
 @cache_results
-def get_compress_weight_primitive(
+def get_compress_weight_model(
     config: WeightCompressionConfig,
     weight_shape: Tuple,
     scale_shape: Optional[Tuple] = None,
     zero_point_shape: Optional[Tuple] = None,
     reduction_axes: Optional[Tuple] = None,
-    params: Optional[PrimitiveParameters] = None,
+    ov_model_params: Optional[OVModelParameters] = None,
 ):
     if scale_shape is None and zero_point_shape is not None:
         raise Exception("Zero point shape can only be provided if scale shape is provided.")
-    if (scale_shape is None) != (reduction_axes is not None):
-        raise Exception("Either one of scale_shape or reduction_axes must be provided at the same time.")
+    # if (scale_shape is None) != (reduction_axes is not None):
+    #     raise Exception("Either one of scale_shape or reduction_axes must be provided at the same time.")
 
-    if params is None:
-        params = PrimitiveParameters()
-    if config.mode in [CompressWeightsMode.INT4_ASYM, CompressWeightsMode.INT4_SYM]:
-        params.dynamic = False
-
-    if params.dynamic:
+    if ov_model_params.dynamic:
         weight_shape = (-1,) * len(weight_shape)
         if scale_shape is not None:
             scale_shape = (-1,) * (len(scale_shape) - 1) + (1,)
@@ -99,7 +173,7 @@ def get_compress_weight_primitive(
 
     return _build_compress_model(
         config,
-        params,
+        ov_model_params,
         weight_shape,
         scale_shape,
         zero_point_shape,
@@ -109,19 +183,19 @@ def get_compress_weight_primitive(
 
 
 @cache_results
-def get_compress_decompress_weight_primitive(
+def get_compress_decompress_weight_model(
     config: WeightCompressionConfig,
     weight_shape: Tuple,
     scale_shape: Optional[Tuple],
     zero_point_shape: Optional[Tuple] = None,
-    params: Optional[PrimitiveParameters] = None,
+    ov_model_params: Optional[OVModelParameters] = None,
 ):
-    if params is None:
-        params = PrimitiveParameters()
+    if ov_model_params is None:
+        ov_model_params = OVModelParameters()
     if config.mode in [CompressWeightsMode.INT4_ASYM, CompressWeightsMode.INT4_SYM]:
-        params.dynamic = False
+        ov_model_params.dynamic = False
 
-    if params.dynamic:
+    if ov_model_params.dynamic:
         weight_shape = (-1,) * len(weight_shape)
         scale_shape = (-1,) * (len(scale_shape) - 1) + (1,)
         if zero_point_shape is not None:
@@ -129,22 +203,23 @@ def get_compress_decompress_weight_primitive(
 
     return _build_compress_decompress_model(
         config,
-        params,
+        ov_model_params,
         weight_shape,
         scale_shape,
         zero_point_shape,
     )
 
+
 def _build_compress_decompress_model(
     config: WeightCompressionConfig,
-    params: PrimitiveParameters,
+    ov_model_params: OVModelParameters,
     weight_shape: Tuple,
     scale_shape: Tuple,
     zero_point_shape: Optional[Tuple] = None,
 ):
     ov_parameters, ov_results = _build_compress_model(
         config,
-        params,
+        ov_model_params,
         weight_shape,
         scale_shape,
         zero_point_shape,
@@ -153,7 +228,7 @@ def _build_compress_decompress_model(
     )
     return _get_compress_decompress_model(
         config,
-        params,
+        ov_model_params,
         ov_parameters,
         ov_results,
     )
@@ -161,18 +236,18 @@ def _build_compress_decompress_model(
 
 def _build_compress_model(
     config: WeightCompressionConfig,
-    params: PrimitiveParameters,
+    ov_model_params: OVModelParameters,
     weight_shape: Tuple,
     scale_shape: Optional[Tuple] = None,
     zero_point_shape: Optional[Tuple] = None,
     reduction_axes: Optional[Tuple] = None,
     return_nodes: bool = False,
 ):
-    if params.input_dtype == "fp32":
+    if ov_model_params.input_dtype == "fp32":
         input_dtype = ov.Type.f32
-    elif params.input_dtype == "fp16":
+    elif ov_model_params.input_dtype == "fp16":
         input_dtype = ov.Type.f16
-    elif params.input_dtype == "bf16":
+    elif ov_model_params.input_dtype == "bf16":
         input_dtype = ov.Type.bf16
     else:
         raise Exception
@@ -246,7 +321,7 @@ def _build_compress_model(
 
     return _get_compress_model(
         config,
-        params,
+        ov_model_params,
         ov_parameters,
         weight,
         scale,
@@ -257,7 +332,7 @@ def _build_compress_model(
 
 def _get_compress_model(
     config: WeightCompressionConfig,
-    params: PrimitiveParameters,
+    ov_model_params: OVModelParameters,
     ov_parameters: List[ov._pyopenvino.op.Parameter],
     w: ov.runtime.Node,
     s: ov.runtime.Node,
@@ -301,9 +376,9 @@ def _get_compress_model(
 
     def infer(inputs):
         infer_request = compiled_model.create_infer_request()
-        infer_request.infer(inputs, share_outputs=params.share_outputs)
+        infer_request.infer(inputs, share_outputs=ov_model_params.share_outputs)
         outputs = [infer_request.get_output_tensor(i) for i in range(len(infer_request.results))]
-        if params.release_memory:
+        if ov_model_params.release_memory:
             compiled_model.release_memory()
         return outputs
 
@@ -312,7 +387,7 @@ def _get_compress_model(
 
 def _get_compress_decompress_model(
     config: WeightCompressionConfig,
-    params: PrimitiveParameters,
+    ov_model_params: OVModelParameters,
     parameters: List[ov._pyopenvino.op.Parameter],
     results: List[ov._pyopenvino.Node],
 ):
@@ -336,9 +411,9 @@ def _get_compress_decompress_model(
 
     def infer(inputs):
         infer_request = compiled_model.create_infer_request()
-        infer_request.infer(inputs, share_outputs=params.share_outputs)
+        infer_request.infer(inputs, share_outputs=ov_model_params.share_outputs)
         outputs = [infer_request.get_output_tensor(i) for i in range(len(infer_request.results))]
-        if params.release_memory:
+        if ov_model_params.release_memory:
             compiled_model.release_memory()
         return outputs
 
