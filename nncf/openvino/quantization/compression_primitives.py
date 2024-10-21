@@ -123,6 +123,7 @@ def get_compress_decompress_weight_primitive(
         zero_point_shape,
     )
 
+
 def _build_compress_decompress_model(
     config: WeightCompressionConfig,
     params: PrimitiveParameters,
@@ -131,13 +132,7 @@ def _build_compress_decompress_model(
     zero_point_shape: Optional[Tuple] = None,
 ):
     ov_parameters, ov_results = _build_compress_model(
-        config,
-        params,
-        weight_shape,
-        scale_shape,
-        zero_point_shape,
-        reduction_axes=None,
-        return_nodes=True
+        config, params, weight_shape, scale_shape, zero_point_shape, reduction_axes=None, return_nodes=True
     )
     return _get_compress_decompress_model(
         config,
@@ -196,7 +191,7 @@ def _build_compress_model(
 
             num_groups_per_channel = channel_size // group_size
             shape = list(weight.shape)  # [a1, r, a2] - "r" refers to number of channels along reduction axis
-            shape[reduction_axes: reduction_axes + 1] = (num_groups_per_channel, group_size)
+            shape[reduction_axes : reduction_axes + 1] = (num_groups_per_channel, group_size)
             weight = opset.reshape(weight, shape, special_zero=False)
             reduction_axes += 1
 

@@ -24,7 +24,6 @@ from nncf.tensor.definitions import TensorDataType
 
 from .dispatched_functions import do_int_quantization
 
-
 ReductionAxes = Tuple[int, ...]
 
 NF4_QUANTILES = np.array(
@@ -342,7 +341,9 @@ def get_integer_quantization_error(
     if weight.dtype != TensorDataType.float32:
         weight = weight.astype(TensorDataType.float32)
 
-    compressed_weights, scale, zero_point = do_int_quantization(weight, reduction_axes, config, invert_division=invert_division)
+    compressed_weights, scale, zero_point = do_int_quantization(
+        weight, reduction_axes, config, invert_division=invert_division
+    )
     decompressed_weight = do_int_dequantization(compressed_weights, scale, zero_point)
 
     decompressed_weight = decompressed_weight.reshape(orig_shape)

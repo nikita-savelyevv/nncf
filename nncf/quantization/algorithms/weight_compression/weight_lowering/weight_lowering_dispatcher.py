@@ -10,12 +10,9 @@
 # limitations under the License.
 from enum import Enum
 from functools import wraps
-from typing import Dict, Any, Callable, Optional
+from typing import Any, Callable, Dict, Optional
 
 from nncf.utils import is_openvino_available
-from .ov_backend import do_int_quantization as do_int_quantization_ov
-from .tensor_backend import do_int_quantization as do_int_quantization_tensor
-from functools import singledispatch
 
 
 class WeightLoweringBackend(Enum):

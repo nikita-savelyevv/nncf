@@ -22,10 +22,13 @@ from nncf.tensor import Tensor
 from nncf.tensor import functions as fns
 from nncf.tensor.definitions import TensorDataType
 
-from .dispatched_functions import do_int_quantization, calculate_quantized_dequantized_weight
+from .common import calculate_integer_quantization_params
+from .common import calculate_quantized_weight
+from .common import do_int_dequantization
+from .common import reshape_weight_for_grouped_quantization
+from .dispatched_functions import calculate_quantized_dequantized_weight
+from .dispatched_functions import do_int_quantization
 from .weight_lowering_dispatcher import WeightLoweringBackend
-
-from .common import reshape_weight_for_grouped_quantization, calculate_quantized_weight, calculate_integer_quantization_params, do_int_dequantization
 
 ReductionAxes = Tuple[int, ...]
 
@@ -90,7 +93,12 @@ def _(
 
 @calculate_quantized_dequantized_weight.register(WeightLoweringBackend.TENSOR)
 def _(
-    weight: Tensor, config: WeightCompressionConfig, scale: Tensor, zero_point: Optional[Tensor] = None, invert_division=False, **kwargs
+    weight: Tensor,
+    config: WeightCompressionConfig,
+    scale: Tensor,
+    zero_point: Optional[Tensor] = None,
+    invert_division=False,
+    **kwargs,
 ) -> Tensor:
     compressed_weight = calculate_quantized_weight(weight, config, scale, zero_point, invert_division)
     decompressed_weight = do_int_dequantization(compressed_weight, scale, zero_point)

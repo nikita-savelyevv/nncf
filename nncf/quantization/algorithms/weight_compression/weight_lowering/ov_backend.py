@@ -34,8 +34,9 @@ from nncf import CompressWeightsMode
 from nncf.quantization.algorithms.weight_compression.config import WeightCompressionConfig
 from nncf.tensor import Tensor
 
+from .dispatched_functions import calculate_quantized_dequantized_weight
+from .dispatched_functions import do_int_quantization
 from .weight_lowering_dispatcher import WeightLoweringBackend
-from .dispatched_functions import do_int_quantization, calculate_quantized_dequantized_weight
 
 
 @dataclass
@@ -46,11 +47,14 @@ class OVModelParameters:
     share_outputs: bool = True
     input_dtype: str = "fp32"
 
+    def __hash__(self):
+        return hash((self.dynamic, self.recompile, self.release_memory, self.share_outputs, self.input_dtype))
+
 
 class CompiledModelCache:
     def __init__(self):
         self._cache = {}
-    
+
     def clear(self):
         self._cache.clear()
 
@@ -72,7 +76,7 @@ def cache_results(func):
         cache = COMPILED_MODEL_CACHE._cache
         if not recompile and cache_key in cache:
             return cache[cache_key]
-        result = func(cache, *args, **kwargs)
+        result = func(*args, **kwargs)
         cache[cache_key] = result
         return result
 
@@ -109,12 +113,12 @@ def _(
     )
 
     if precomputed_scale is None:
-        results = model(weight)
+        results = model(weight.data)
         compressed_weight, scale, zero_point = [Tensor(it) for it in results]
     else:
-        inputs = [weight, precomputed_scale]
+        inputs = [weight.data, precomputed_scale.data]
         if precomputed_zero_point is not None:
-            inputs += [precomputed_zero_point]
+            inputs += [precomputed_zero_point.data]
         compressed_weight = Tensor(model(inputs)[0])
         scale, zero_point = precomputed_scale, precomputed_zero_point
 
@@ -123,7 +127,12 @@ def _(
 
 @calculate_quantized_dequantized_weight.register(WeightLoweringBackend.OV)
 def _(
-    weight: Tensor, config: WeightCompressionConfig, scale: Tensor, zero_point: Optional[Tensor] = None, ov_model_params: Optional[OVModelParameters] = None, **kwargs
+    weight: Tensor,
+    config: WeightCompressionConfig,
+    scale: Tensor,
+    zero_point: Optional[Tensor] = None,
+    ov_model_params: Optional[OVModelParameters] = None,
+    **kwargs,
 ) -> Tensor:
     weight_shape = weight.shape
     scale_shape = scale.shape
@@ -134,17 +143,11 @@ def _(
     if config.mode in [CompressWeightsMode.INT4_ASYM, CompressWeightsMode.INT4_SYM]:
         ov_model_params.dynamic = False
 
-    model = get_compress_decompress_weight_model(
-        config,
-        weight_shape,
-        scale_shape,
-        zero_point_shape,
-        ov_model_params
-    )
+    model = get_compress_decompress_weight_model(config, weight_shape, scale_shape, zero_point_shape, ov_model_params)
 
-    inputs = [weight, scale]
+    inputs = [weight.data, scale.data]
     if zero_point is not None:
-        inputs.append(zero_point)
+        inputs.append(zero_point.data)
     results = model(inputs)
     decompressed_weight = [Tensor(it) for it in results][0]
     return decompressed_weight
@@ -218,13 +221,7 @@ def _build_compress_decompress_model(
     zero_point_shape: Optional[Tuple] = None,
 ):
     ov_parameters, ov_results = _build_compress_model(
-        config,
-        ov_model_params,
-        weight_shape,
-        scale_shape,
-        zero_point_shape,
-        reduction_axes=None,
-        return_nodes=True
+        config, ov_model_params, weight_shape, scale_shape, zero_point_shape, reduction_axes=None, return_nodes=True
     )
     return _get_compress_decompress_model(
         config,
@@ -283,7 +280,7 @@ def _build_compress_model(
 
             num_groups_per_channel = channel_size // group_size
             shape = list(weight.shape)  # [a1, r, a2] - "r" refers to number of channels along reduction axis
-            shape[reduction_axes: reduction_axes + 1] = (num_groups_per_channel, group_size)
+            shape[reduction_axes : reduction_axes + 1] = (num_groups_per_channel, group_size)
             weight = opset.reshape(weight, shape, special_zero=False)
             reduction_axes += 1
 
