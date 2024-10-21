@@ -28,7 +28,7 @@ from .common import do_int_dequantization
 from .common import reshape_weight_for_grouped_quantization
 from .dispatched_functions import calculate_quantized_dequantized_weight
 from .dispatched_functions import do_int_quantization
-from .weight_lowering_dispatcher import WeightLoweringBackend
+from .dispatcher import WeightLoweringBackend
 
 ReductionAxes = Tuple[int, ...]
 

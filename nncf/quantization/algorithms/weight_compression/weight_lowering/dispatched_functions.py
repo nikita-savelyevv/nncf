@@ -13,8 +13,8 @@ from typing import Optional, Tuple
 from nncf.tensor import Tensor
 
 from ..config import WeightCompressionConfig
-from .weight_lowering_dispatcher import ov_available_backend_selector
-from .weight_lowering_dispatcher import weight_lowering_dispatcher
+from .dispatcher import ov_available_backend_selector
+from .dispatcher import weight_lowering_dispatcher
 
 
 @weight_lowering_dispatcher(ov_available_backend_selector)
