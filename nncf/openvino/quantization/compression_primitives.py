@@ -303,8 +303,10 @@ class OVCompressionPrimitiveCache:
             outputs = [infer_request.get_output_tensor(i) for i in range(len(infer_request.results))]
             return outputs
 
-        # return compiled_model, lambda parameters: compiled_model(parameters, share_outputs=SHARE_OUTPUTS)
-        return compiled_model, infer
+        if config.num_bits == 4:
+            return compiled_model, lambda parameters: compiled_model(parameters, share_outputs=SHARE_OUTPUTS)
+        else:
+            return compiled_model, infer
 
     @staticmethod
     def _get_compress_decompress_model(
