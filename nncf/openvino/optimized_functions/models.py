@@ -342,7 +342,13 @@ def _build_compress_model(
     output_zero_point_dtype = ov_model_params.output_dtypes["zero_point"]
 
     # Validate input dtypes
-    valid_weight_dtypes = [TensorDataType.float32, TensorDataType.float16, TensorDataType.bfloat16]
+    valid_weight_dtypes = [
+        TensorDataType.float32,
+        TensorDataType.float16,
+        TensorDataType.bfloat16,
+        TensorDataType.f8e4m3,
+        TensorDataType.f8e5m2,
+    ]
     if weight_dtype not in valid_weight_dtypes:
         msg = f"Weight must be one of the following data types: {valid_weight_dtypes}. But found: {weight_dtype}."
         raise ValueError(msg)
@@ -381,6 +387,7 @@ def _build_compress_model(
     # Build OV model
     weight = opset.parameter(weight_shape, name="weight", dtype=DTYPE_MAP_OV[weight_dtype])
     ov_parameters = [weight]
+    weight = convert_op(weight, ov.Type.f32)
 
     num_bits = config.num_bits
     eps = np.finfo(np.float32).eps
@@ -400,7 +407,6 @@ def _build_compress_model(
             # [a1, r, a2] -> [a1, 1, a2]
             min_values = opset.reduce_min(weight, reduction_axes=reduction_axes, keep_dims=True)
             max_values = opset.reduce_max(weight, reduction_axes=reduction_axes, keep_dims=True)
-            min_values, max_values = opset.convert(min_values, ov.Type.f32), opset.convert(max_values, ov.Type.f32)
 
             levels = level_high - level_low + 1
             scale = divide_op(max_values - min_values, opset.constant(levels - 1, ov.Type.f32))
@@ -408,7 +414,6 @@ def _build_compress_model(
         else:
             w_abs_min = opset.abs(opset.reduce_min(weight, reduction_axes=reduction_axes, keep_dims=True))
             w_max = opset.reduce_max(weight, reduction_axes=reduction_axes, keep_dims=True)
-            w_abs_min, w_max = opset.convert(w_abs_min, ov.Type.f32), opset.convert(w_max, ov.Type.f32)
 
             scale = opset.select(opset.greater_equal(w_abs_min, w_max), w_abs_min, opset.negative(w_max))
             scale = divide_op(scale, opset.constant(-level_low, ov.Type.f32))
@@ -427,7 +432,6 @@ def _build_compress_model(
         zero_point = opset.constant(level_low, ov.Type.f32) - opset.round(scaled_min_values)
         zero_point = opset.clamp(zero_point, level_low, level_high)
 
-    weight = convert_op(weight, ov.Type.f32)
     compressed_weight = divide_op(weight, scale)
 
     if is_asym_mode:

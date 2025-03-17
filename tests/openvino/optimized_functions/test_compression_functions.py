@@ -73,12 +73,13 @@ def get_random_float_tensor(shape, dtype, backend, seed=0):
     data = np.random.normal(size=shape)
     data = data.astype(np.float16 if dtype == TensorDataType.float16 else np.float32)
 
-    if backend == TensorBackend.ov or dtype == TensorDataType.bfloat16:
+    create_through_ov = dtype in [TensorDataType.bfloat16, TensorDataType.f8e5m2, TensorDataType.f8e4m3]
+    if backend == TensorBackend.ov or create_through_ov:
         data = Tensor(ov.Tensor(data, shape, DTYPE_MAP_OV[DTYPE_MAP_REV_NP[data.dtype]]))
-        if dtype == TensorDataType.bfloat16:
-            data = data.astype(TensorDataType.bfloat16)
+        if create_through_ov:
+            data = data.astype(dtype)
     if backend == TensorBackend.numpy:
-        data = data.as_numpy_tensor() if dtype == TensorDataType.bfloat16 else Tensor(data)
+        data = data.as_numpy_tensor() if create_through_ov else Tensor(data)
     return Tensor(data)
 
 
@@ -116,7 +117,16 @@ def openvino_available(available: bool):
         (QuantizationTask.Q_DQ_RQ, "auto"),
     ],
 )
-@pytest.mark.parametrize("dtype", [TensorDataType.float32, TensorDataType.float16, TensorDataType.bfloat16])
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        TensorDataType.float32,
+        TensorDataType.float16,
+        TensorDataType.bfloat16,
+        TensorDataType.f8e5m2,
+        TensorDataType.f8e4m3,
+    ],
+)
 @pytest.mark.parametrize("precompute_s_zp", [False, True], ids=["no-precompute", "precompute"])
 def test_quantization_alignment(weight_shape, config, quantization_task, tensor_backend, dtype, precompute_s_zp):
     d1, d2 = weight_shape
