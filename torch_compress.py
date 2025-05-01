@@ -1,4 +1,4 @@
-# Copyright (c) 2024 Intel Corporation
+# Copyright (c) 2025 Intel Corporation
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -8,9 +8,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 import gc
 import json
-import os
 import time
 from enum import Enum
 from functools import wraps
@@ -18,18 +18,17 @@ from pathlib import Path
 from typing import Union, Type, Optional, Any
 from weakref import WeakKeyDictionary
 
-import numpy as np
 import torch
 import transformers
-from datasets import load_dataset
 from lm_eval.models.utils import get_dtype
 from optimum.exporters.openvino.convert import export_from_model
 from optimum.intel.openvino import OVModelForCausalLM
 from torch import nn
-from transformers import AutoModelForCausalLM, PreTrainedModel, PretrainedConfig
+from transformers import AutoModelForCausalLM, PreTrainedModel
 from transformers import AutoTokenizer
 from optimum.gptq.data import get_dataset, prepare_dataset
 from transformers.modeling_utils import SpecificPreTrainedModelType, load_state_dict, _load_state_dict_into_model
+# _load_meta_state_dict_into_model?
 from transformers.utils import SAFE_WEIGHTS_NAME
 from transformers.utils.hub import get_checkpoint_shard_files
 
@@ -42,6 +41,7 @@ from nncf.quantization.algorithms.smooth_quant.torch_backend import SQMultiply
 from nncf.torch.function_hook import get_hook_storage
 from nncf.torch.function_hook.hook_storage import decode_hook_name
 from nncf.torch.function_hook.nncf_graph.nncf_graph_builder import build_nncf_graph
+from nncf.torch.function_hook.wrapper import ATR_HOOK_STORAGE
 from nncf.torch.model_graph_manager import get_const_data, split_const_name, get_module_by_name
 from nncf.torch.quantization.layers import BaseWeightsDecompressor
 from nncf.torch.utils import is_multidevice
@@ -69,7 +69,8 @@ class NNCFModelForCausalLM(PreTrainedModel):
     def save_pretrained(self, save_directory, *args, **kwargs):
         super().save_pretrained(save_directory, *args, **kwargs)
         with open(save_directory / Path(NNCF_CONFIG_FILENAME), "w") as f:
-            json.dump(self.get_nncf_config(self), f, indent=4)
+            nncf_config = self.get_nncf_config()
+            json.dump(nncf_config, f, indent=4)
 
     @classmethod
     def from_pretrained(
@@ -130,17 +131,21 @@ class NNCFModelForCausalLM(PreTrainedModel):
                     if isinstance(module, SQMultiply):
                         module.forward = get_forward_wrapper(module)
 
+            if len(state_dict) > 0:
+                # Cast scales back to original dtype
+                dtype = next(iter(state_dict.values())).dtype
+                if dtype != torch.float32:
+                    for name, module in get_hook_storage(model).named_hooks():
+                        if isinstance(module, SQMultiply):
+                            module.scale.data = module.scale.data.type(dtype)
+
         new_class = type("NNCFWrappedModelForCausalLM", (NNCFModelForCausalLM, model.__class__), {})
         model.__class__ = new_class
         return model
 
-    @staticmethod
-    def get_nncf_config(model: nn.Module) -> dict[str, Any]:
+    def get_nncf_config(self) -> dict[str, Any]:
         """
-        Returns serializable config which contains all information required to recover all additional modules placement.
-
-        :param model: The model to serialize.
-        :return: Serializable config.
+        Same as nncf.torch.get_config() but allows to serialize the model with Identity modules
         """
 
         from nncf.torch.function_hook.serialization import S_COMMAND
@@ -148,7 +153,7 @@ class NNCFModelForCausalLM(PreTrainedModel):
         from nncf.torch.layer_utils import StatefulModuleInterface
         from nncf.torch.function_hook.serialization import COMPRESSION_STATE_ATTR
 
-        hook_storage = get_hook_storage(model)
+        hook_storage = get_hook_storage(self)
 
         # Find shared modules
         modules_map: WeakKeyDictionary[nn.Module, list[str]] = WeakKeyDictionary()
@@ -160,15 +165,15 @@ class NNCFModelForCausalLM(PreTrainedModel):
         # Generate serialized transformation commands
         serialized_transformations: list[S_COMMAND] = []
         for module, names in modules_map.items():
+            if isinstance(module, nn.Identity):
+                continue
             compression_module_name = module.__class__.__name__
             if compression_module_name not in COMPRESSION_MODULES.registry_dict:
                 msg = (
                     f"Could not serialize compression module with name {compression_module_name}. "
                     "Please register your module in the COMPRESSION_MODULES registry."
                 )
-                # nncf_logger.info(msg)
-                continue
-                # raise nncf.InternalError(msg)
+                raise nncf.InternalError(msg)
             if not isinstance(module, StatefulModuleInterface):
                 msg = "Support only StatefulModuleInterface modules"
                 raise nncf.InternalError(msg)
@@ -255,7 +260,7 @@ def export_to_ov(model, output_dir):
 
 
 def export_to_pt2(model, output_dir, weight_dtype=torch.float32):
-    if not hasattr(model, "__nncf_hooks"):
+    if not hasattr(model, ATR_HOOK_STORAGE):
         model.save_pretrained(output_dir)
         return
 
@@ -266,23 +271,26 @@ def export_to_pt2(model, output_dir, weight_dtype=torch.float32):
 
     hook_storage = get_hook_storage(model)
     named_hooks = {k: v for k,v in hook_storage.named_hooks()}
-    for name, decompressor in named_hooks.items():
-        if not isinstance(decompressor, BaseWeightsDecompressor):
-            continue
-        _, op_name, _ = decode_hook_name(name)
-        weight_node = graph.get_node_by_name(op_name)
-        weight = get_const_data(weight_node, model)
+    for name, module in named_hooks.items():
+        if isinstance(module, BaseWeightsDecompressor):
+            _, op_name, _ = decode_hook_name(name)
+            weight_node = graph.get_node_by_name(op_name)
+            weight = get_const_data(weight_node, model)
 
-        qdq_weight = decompressor(weight)
-        qdq_weight = qdq_weight.type(weight_dtype)
+            qdq_weight = module(weight)
+            qdq_weight = qdq_weight.type(weight_dtype)
 
-        module_name, weight_attr_name = split_const_name(weight_node.layer_attributes.name)
-        module = get_module_by_name(module_name, model)
-        weight_param = getattr(module, weight_attr_name)
-        weight_param.requires_grad = False
-        weight_param.data = qdq_weight
+            module_name, weight_attr_name = split_const_name(weight_node.layer_attributes.name)
+            linear_module = get_module_by_name(module_name, model)
+            weight_param = getattr(linear_module, weight_attr_name)
+            weight_param.requires_grad = False
+            weight_param.data = qdq_weight
 
-        hook_storage.set_submodule(name, torch.nn.Identity())
+            hook_storage.set_submodule(name, torch.nn.Identity())
+        elif isinstance(module, SQMultiply):
+            # Possibly this is not needed
+            module.scale.data = module.scale.data.type(weight_dtype)
+
 
     model.save_pretrained(output_dir)
 
@@ -379,8 +387,8 @@ def main(input_backend, output_backend, compression_kwargs, save_dir, pt_dtype=t
     if output_backend == ModelBacked.PT:
         if export_compressed:
             # Export PT model with compressed constants
-            compressed_model.save_pretrained(save_dir / "compressed")
-            tokenizer.save_pretrained(save_dir / "compressed")
+            # compressed_model.save_pretrained(save_dir / "compressed")
+            # tokenizer.save_pretrained(save_dir / "compressed")
             do_sample_generation(compressed_model, tokenizer)
             eval_results = run_lm_eval(compressed_model, ModelBacked.PT, "wikitext", DEVICE)
             with open(save_dir / "compressed" / "eval_results.json", "w") as f:
@@ -419,12 +427,13 @@ def main(input_backend, output_backend, compression_kwargs, save_dir, pt_dtype=t
 if __name__ == "__main__":
     parent_save_dir = "torch_compress" / Path(MODEL_ID.split("/")[1])
     # parent_save_dir = "torch_compress" / Path("tmp")
-    save_subdir = "int4_asym_awq"
+    save_subdir = "int4_asym"
     compression_kwargs = dict(
         mode=nncf.CompressWeightsMode.INT4_ASYM,
         # group_size=4,
         # ratio=0.8,
-        awq=True,
+        # awq=True,
+        # scale_estimation=True,
         # subset_size=1,
         # sensitivity_metric=nncf.SensitivityMetric.HESSIAN_INPUT_ACTIVATION,
     )
