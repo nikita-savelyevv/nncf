@@ -47,8 +47,8 @@ from nncf.torch.quantization.layers import BaseWeightsDecompressor
 from nncf.torch.utils import is_multidevice
 
 # MODEL_ID = "microsoft/Phi-4-mini-instruct"
-# MODEL_ID = "meta-llama/Llama-3.2-1B"
-MODEL_ID = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+MODEL_ID = "meta-llama/Llama-3.2-1B"
+# MODEL_ID = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 # MODEL_ID = "facebook/opt-125m"
 # MODEL_ID = "HuggingFaceH4/tiny-random-LlamaForCausalLM"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -245,17 +245,15 @@ def export_to_ov(model, output_dir):
     if isinstance(model, OVModelForCausalLM):
         model.save_pretrained(output_dir)
     else:
-        try:
-            if hasattr(model, "__nncf_hooks"):
-                hook_storage = get_hook_storage(model)
-                for name, decompressor in hook_storage.named_hooks():
-                    if isinstance(decompressor, BaseWeightsDecompressor):
-                        decompressor.result_dtype = torch.float32
-        except ImportError:
-            if hasattr(model, "nncf"):
-                for module in model.nncf.modules():
-                    if isinstance(module, BaseWeightsDecompressor):
-                        module.result_dtype = torch.float32
+        if hasattr(model, "__nncf_hooks"):
+            hook_storage = get_hook_storage(model)
+            for name, decompressor in hook_storage.named_hooks():
+                if isinstance(decompressor, BaseWeightsDecompressor):
+                    decompressor.result_dtype = torch.float32
+        elif hasattr(model, "nncf"):
+            for module in model.nncf.modules():
+                if isinstance(module, BaseWeightsDecompressor):
+                    module.result_dtype = torch.float32
 
         export_from_model(model.to("cpu"), output_dir, compression_option="fp32", device="cpu")
 
@@ -298,9 +296,13 @@ def export_to_pt2(model, output_dir, weight_dtype=torch.float32):
 
 def compress_model(model, dataset, compression_kwargs):
     if isinstance(model, OVModelForCausalLM):
+        if compression_kwargs.get("awq", False) or compression_kwargs.get("scale_estimation", False):
+            dataset = nncf.Dataset(dataset, lambda x: model.prepare_inputs(**x))
+        else:
+            dataset = None
         nncf.compress_weights(
             model.model,
-            dataset=nncf.Dataset(dataset, lambda x: model.prepare_inputs(**x)),
+            dataset=dataset,
             **compression_kwargs
         )
         compressed_model = model
@@ -434,7 +436,7 @@ if __name__ == "__main__":
     compression_kwargs = dict(
         mode=nncf.CompressWeightsMode.INT4_ASYM,
         # group_size=4,
-        # ratio=0.8,
+        # ratio=0.5,
         awq=True,
         scale_estimation=True,
         # subset_size=1,
