@@ -384,8 +384,10 @@ def main(input_backend, output_backend, compression_kwargs, save_dir, pt_dtype=t
         dataset = [{k: v.to(model.device) for k, v in x.items()} for x in dataset]
 
     # Compress model
+    start_time = time.perf_counter()
     compressed_model = compress_model(model, dataset, compression_kwargs)
     # compressed_model = model
+    print("Compression time: ", time.perf_counter() - start_time)
 
     # Export model
     if output_backend == ModelBacked.PT:
