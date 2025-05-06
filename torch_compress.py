@@ -46,8 +46,9 @@ from nncf.torch.model_graph_manager import get_const_data, split_const_name, get
 from nncf.torch.quantization.layers import BaseWeightsDecompressor
 from nncf.torch.utils import is_multidevice
 
-MODEL_ID = "microsoft/Phi-4-mini-instruct"
+# MODEL_ID = "microsoft/Phi-4-mini-instruct"
 # MODEL_ID = "meta-llama/Llama-3.2-1B"
+MODEL_ID = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 # MODEL_ID = "facebook/opt-125m"
 # MODEL_ID = "HuggingFaceH4/tiny-random-LlamaForCausalLM"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -89,6 +90,7 @@ class NNCFModelForCausalLM(PreTrainedModel):
         pretrained_model_name_or_path = Path(pretrained_model_name_or_path)
         nncf_config_filepath = pretrained_model_name_or_path / NNCF_CONFIG_FILENAME
         if nncf_config_filepath.exists():
+            # Additional processing of SQMultiply hooks
             with open(nncf_config_filepath, "r") as f:
                 nncf_config = json.load(f)
 
@@ -244,7 +246,6 @@ def export_to_ov(model, output_dir):
         model.save_pretrained(output_dir)
     else:
         try:
-
             if hasattr(model, "__nncf_hooks"):
                 hook_storage = get_hook_storage(model)
                 for name, decompressor in hook_storage.named_hooks():
@@ -369,7 +370,8 @@ def run_lm_eval(model: Union[str, PreTrainedModel], backend: ModelBacked, task: 
 def main(input_backend, output_backend, compression_kwargs, save_dir, pt_dtype=torch.float32, export_compressed=False):
     # Create model
     if input_backend == ModelBacked.PT:
-        model = NNCFModelForCausalLM.from_pretrained(MODEL_ID, torch_dtype=pt_dtype).to(DEVICE).eval()
+        model_cls = NNCFModelForCausalLM if output_backend == ModelBacked.PT else AutoModelForCausalLM
+        model = model_cls.from_pretrained(MODEL_ID, torch_dtype=pt_dtype).to(DEVICE).eval()
     else:
         model = OVModelForCausalLM.from_pretrained(MODEL_ID, export=True, load_in_8bit=False)
 
@@ -391,6 +393,7 @@ def main(input_backend, output_backend, compression_kwargs, save_dir, pt_dtype=t
             # tokenizer.save_pretrained(save_dir / "compressed")
             do_sample_generation(compressed_model, tokenizer)
             eval_results = run_lm_eval(compressed_model, ModelBacked.PT, "wikitext", DEVICE)
+            (save_dir / "compressed").mkdir(exist_ok=True, parents=True)
             with open(save_dir / "compressed" / "eval_results.json", "w") as f:
                 json.dump(eval_results, f, indent=4)
 
@@ -427,13 +430,13 @@ def main(input_backend, output_backend, compression_kwargs, save_dir, pt_dtype=t
 if __name__ == "__main__":
     parent_save_dir = "torch_compress" / Path(MODEL_ID.split("/")[1])
     # parent_save_dir = "torch_compress" / Path("tmp")
-    save_subdir = "int4_asym"
+    save_subdir = "int4_asym_awq_se"
     compression_kwargs = dict(
         mode=nncf.CompressWeightsMode.INT4_ASYM,
         # group_size=4,
         # ratio=0.8,
-        # awq=True,
-        # scale_estimation=True,
+        awq=True,
+        scale_estimation=True,
         # subset_size=1,
         # sensitivity_metric=nncf.SensitivityMetric.HESSIAN_INPUT_ACTIVATION,
     )
@@ -443,10 +446,11 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"OV-OV case failed: {e}")
 
-    # try:
-    #     main(ModelBacked.PT, ModelBacked.OV, compression_kwargs, parent_save_dir / save_subdir / "pt_ov")
-    # except Exception as e:
-    #     print(f"PT-OV case failed: {e}")
+    try:
+        main(ModelBacked.PT, ModelBacked.OV, compression_kwargs, parent_save_dir / save_subdir / "pt_ov")
+    except Exception as e:
+        raise e
+        print(f"PT-OV case failed: {e}")
 
     try:
         main(ModelBacked.PT, ModelBacked.PT, compression_kwargs, parent_save_dir / save_subdir / "pt_pt_fp32", torch.float32, export_compressed=True)
