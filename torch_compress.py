@@ -46,12 +46,14 @@ from nncf.torch.model_graph_manager import get_const_data, split_const_name, get
 from nncf.torch.quantization.layers import BaseWeightsDecompressor
 from nncf.torch.utils import is_multidevice
 
-# MODEL_ID = "microsoft/Phi-4-mini-instruct"
-MODEL_ID = "meta-llama/Llama-3.2-1B"
+MODEL_ID = "microsoft/Phi-4-mini-instruct"
+# MODEL_ID = "meta-llama/Llama-3.2-1B"
 # MODEL_ID = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 # MODEL_ID = "facebook/opt-125m"
 # MODEL_ID = "HuggingFaceH4/tiny-random-LlamaForCausalLM"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+# EVAL_TASK = "wikitext"
+EVAL_TASK = "mmlu"
 NNCF_CONFIG_FILENAME = "nncf_config.json"
 print(f"Using device: {DEVICE}")
 
@@ -338,7 +340,13 @@ def do_sample_generation(model: Union[str, PreTrainedModel], backend: ModelBacke
     return output_text
 
 
-def run_lm_eval(model: Union[str, PreTrainedModel], backend: ModelBacked, task: str, device: str, limit=None):
+def run_lm_eval(
+    model: Union[str, PreTrainedModel],
+    backend: ModelBacked,
+    task: str, device: str,
+    save_file_path: Path,
+    limit=None
+):
     tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
     tokenizer.pad_token = tokenizer.eos_token
     if backend == ModelBacked.OV:
@@ -366,6 +374,9 @@ def run_lm_eval(model: Union[str, PreTrainedModel], backend: ModelBacked, task: 
     print(f"Evaluation time: {end_time - start_time:.2f} seconds")
     results["config"]["model_dtype"] = str(results["config"]["model_dtype"])
     results.pop("samples", None)
+    save_file_path.parent.mkdir(exist_ok=True, parents=True)
+    with open(save_file_path, "w") as f:
+        json.dump(results, f, indent=4)
     return results
 
 
@@ -396,10 +407,13 @@ def main(input_backend, output_backend, compression_kwargs, save_dir, pt_dtype=t
             # compressed_model.save_pretrained(save_dir / "compressed")
             # tokenizer.save_pretrained(save_dir / "compressed")
             do_sample_generation(compressed_model, tokenizer)
-            eval_results = run_lm_eval(compressed_model, ModelBacked.PT, "wikitext", DEVICE)
-            (save_dir / "compressed").mkdir(exist_ok=True, parents=True)
-            with open(save_dir / "compressed" / "eval_results.json", "w") as f:
-                json.dump(eval_results, f, indent=4)
+            run_lm_eval(
+                compressed_model,
+                ModelBacked.PT,
+                EVAL_TASK,
+                DEVICE,
+                save_dir / "compressed" / f"eval_results_{EVAL_TASK}.json"
+            )
 
         save_dir = save_dir / "decompressed"
         export_to_pt2(compressed_model, save_dir, pt_dtype)
@@ -426,9 +440,7 @@ def main(input_backend, output_backend, compression_kwargs, save_dir, pt_dtype=t
     do_sample_generation(str(save_dir), output_backend)
 
     # Run evaluation
-    eval_results = run_lm_eval(str(save_dir), output_backend, "wikitext", DEVICE)
-    with open(save_dir / "eval_results.json", "w") as f:
-        json.dump(eval_results, f, indent=4)
+    run_lm_eval(str(save_dir), output_backend, EVAL_TASK, DEVICE, save_dir / "eval_results.json")
 
 
 if __name__ == "__main__":
@@ -453,7 +465,6 @@ if __name__ == "__main__":
     try:
         main(ModelBacked.PT, ModelBacked.OV, compression_kwargs, parent_save_dir / save_subdir / "pt_ov")
     except Exception as e:
-        raise e
         print(f"PT-OV case failed: {e}")
 
     try:
