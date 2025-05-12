@@ -440,7 +440,7 @@ def main(input_backend, output_backend, compression_kwargs, save_dir, pt_dtype=t
     do_sample_generation(str(save_dir), output_backend)
 
     # Run evaluation
-    run_lm_eval(str(save_dir), output_backend, EVAL_TASK, DEVICE, save_dir / "eval_results.json")
+    run_lm_eval(str(save_dir), output_backend, EVAL_TASK, DEVICE, save_dir / f"eval_results_{EVAL_TASK}.json")
 
 
 if __name__ == "__main__":
