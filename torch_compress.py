@@ -54,6 +54,7 @@ MODEL_ID = "microsoft/Phi-4-mini-instruct"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 # EVAL_TASK = "wikitext"
 EVAL_TASK = "mmlu"
+EVAL_BATCH_SIZE = 8
 NNCF_CONFIG_FILENAME = "nncf_config.json"
 print(f"Using device: {DEVICE}")
 
@@ -331,12 +332,13 @@ def do_sample_generation(model: Union[str, PreTrainedModel], backend: ModelBacke
         inputs = inputs.to(device=model.device)
 
     transformers.set_seed(42)
-    start_t = time.time()
+    start_time = time.time()
     output = model.generate(**inputs, max_new_tokens=100)
-    print("Elapsed time: ", time.time() - start_t)
+    end_time = time.time()
 
     output_text = tokenizer.decode(output[0][inputs["input_ids"].shape[1]:])
     print("\n", "-"*50, "\n", output_text, "\n", "-"*50, "\n")
+    print("Elapsed time: ", end_time - start_time)
     return output_text
 
 
@@ -356,7 +358,7 @@ def run_lm_eval(
         lm_eval_model = NNCFHFLM(
             model,
             tokenizer=tokenizer,
-            batch_size=1,
+            batch_size=EVAL_BATCH_SIZE,
             device=device,
             parallelize=True and isinstance(model, str),
             max_length=4096,
@@ -366,7 +368,7 @@ def run_lm_eval(
             model=lm_eval_model,
             tasks=[task],
             num_fewshot=0,
-            batch_size=1,
+            batch_size=EVAL_BATCH_SIZE,
             limit=limit,
             device=device,
         )
@@ -446,7 +448,7 @@ def main(input_backend, output_backend, compression_kwargs, save_dir, pt_dtype=t
 if __name__ == "__main__":
     parent_save_dir = "torch_compress" / Path(MODEL_ID.split("/")[1])
     # parent_save_dir = "torch_compress" / Path("tmp")
-    save_subdir = "int4_asym_awq_se"
+    save_subdir = "int4_asym_awq_se_bs8_att2"
     compression_kwargs = dict(
         mode=nncf.CompressWeightsMode.INT4_ASYM,
         # group_size=4,
