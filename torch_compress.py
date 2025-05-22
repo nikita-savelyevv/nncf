@@ -46,15 +46,11 @@ from nncf.torch.model_graph_manager import get_const_data, split_const_name, get
 from nncf.torch.quantization.layers import BaseWeightsDecompressor
 from nncf.torch.utils import is_multidevice
 
-MODEL_ID = "microsoft/Phi-4-mini-instruct"
-# MODEL_ID = "meta-llama/Llama-3.2-1B"
-# MODEL_ID = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-# MODEL_ID = "facebook/opt-125m"
-# MODEL_ID = "HuggingFaceH4/tiny-random-LlamaForCausalLM"
+
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-# EVAL_TASK = "wikitext"
-EVAL_TASK = "mmlu"
-EVAL_BATCH_SIZE = 8
+EVAL_TASK = "wikitext"
+# EVAL_TASK = "mmlu"
+EVAL_BATCH_SIZE = 16 if EVAL_TASK == "mmlu" else 1
 NNCF_CONFIG_FILENAME = "nncf_config.json"
 print(f"Using device: {DEVICE}")
 
@@ -268,7 +264,7 @@ def export_to_pt2(model, output_dir, weight_dtype=torch.float32):
 
     example_input = model.dummy_inputs
     for k in example_input:
-        example_input[k] = example_input[k].to(DEVICE)
+        example_input[k] = example_input[k].to(model.device)
     graph = build_nncf_graph(model, example_input)
 
     hook_storage = get_hook_storage(model)
@@ -319,14 +315,24 @@ def compress_model(model, dataset, compression_kwargs):
     return compressed_model
 
 
-def do_sample_generation(model: Union[str, PreTrainedModel], backend: ModelBacked):
+def run_sample_generation(model_id, model: Union[str, PreTrainedModel], backend: ModelBacked, device, backup_device=None):
     if isinstance(model, str):
         if backend == ModelBacked.OV:
             model = OVModelForCausalLM.from_pretrained(model)
         else:
-            model = NNCFModelForCausalLM.from_pretrained(model).to(DEVICE).eval()
+            try:
+                model = NNCFModelForCausalLM.from_pretrained(model).to(device).eval()
+            except torch.OutOfMemoryError as e:
+                if backup_device is not None:
+                    print(f"Out of memory on {device}, trying {backup_device}")
+                    model = NNCFModelForCausalLM.from_pretrained(model).to(backup_device).eval()
+                else:
+                    print(type(e))
+                    raise e
+            # model = NNCFModelForCausalLM.from_pretrained(model, device_map="auto").eval()
+            # model = NNCFModelForCausalLM.from_pretrained(model).to(device).eval()
 
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
     inputs = tokenizer("What is PyTorch?", return_tensors="pt")
     if not isinstance(model, OVModelForCausalLM):
         inputs = inputs.to(device=model.device)
@@ -343,13 +349,14 @@ def do_sample_generation(model: Union[str, PreTrainedModel], backend: ModelBacke
 
 
 def run_lm_eval(
+    model_id,
     model: Union[str, PreTrainedModel],
     backend: ModelBacked,
     task: str, device: str,
     save_file_path: Path,
     limit=None
 ):
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
     tokenizer.pad_token = tokenizer.eos_token
     if backend == ModelBacked.OV:
         model = OVModelForCausalLM.from_pretrained(model)
@@ -382,16 +389,36 @@ def run_lm_eval(
     return results
 
 
-def main(input_backend, output_backend, compression_kwargs, save_dir, pt_dtype=torch.float32, export_compressed=False):
+def main(
+    model_id,
+    input_backend,
+    output_backend,
+    compression_kwargs,
+    save_dir,
+    device,
+    pt_dtype=torch.float32,
+    export_compressed=False,
+    backup_device=None,
+    do_sample_generation=True,
+):
     # Create model
     if input_backend == ModelBacked.PT:
         model_cls = NNCFModelForCausalLM if output_backend == ModelBacked.PT else AutoModelForCausalLM
-        model = model_cls.from_pretrained(MODEL_ID, torch_dtype=pt_dtype).to(DEVICE).eval()
+        try:
+            model = model_cls.from_pretrained(model_id, torch_dtype=pt_dtype).to(device).eval()
+        except torch.OutOfMemoryError as e:
+            if backup_device is not None:
+                print(f"Out of memory on {device}, trying {backup_device}")
+                model = model_cls.from_pretrained(model_id, torch_dtype=pt_dtype).to(backup_device).eval()
+            else:
+                raise e
+        # model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=pt_dtype, device_map="auto").eval()
+        # model = model_cls.from_pretrained(model_id, torch_dtype=pt_dtype).to(device).eval()
     else:
-        model = OVModelForCausalLM.from_pretrained(MODEL_ID, export=True, load_in_8bit=False)
+        model = OVModelForCausalLM.from_pretrained(model_id, export=True, load_in_8bit=False)
 
     # Prepare dataset
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
     dataset = prepare_dataset(get_dataset("wikitext2", tokenizer, seqlen=32, nsamples=128))
     if input_backend == ModelBacked.PT:
         dataset = [{k: v.to(model.device) for k, v in x.items()} for x in dataset]
@@ -399,8 +426,11 @@ def main(input_backend, output_backend, compression_kwargs, save_dir, pt_dtype=t
     # Compress model
     start_time = time.perf_counter()
     compressed_model = compress_model(model, dataset, compression_kwargs)
-    # compressed_model = model
     print("Compression time: ", time.perf_counter() - start_time)
+
+    del model
+    torch.cuda.empty_cache()
+    gc.collect()
 
     # Export model
     if output_backend == ModelBacked.PT:
@@ -408,12 +438,14 @@ def main(input_backend, output_backend, compression_kwargs, save_dir, pt_dtype=t
             # Export PT model with compressed constants
             # compressed_model.save_pretrained(save_dir / "compressed")
             # tokenizer.save_pretrained(save_dir / "compressed")
-            do_sample_generation(compressed_model, tokenizer)
+            if do_sample_generation:
+                run_sample_generation(model_id, compressed_model, tokenizer, device, backup_device)
             run_lm_eval(
+                model_id,
                 compressed_model,
                 ModelBacked.PT,
                 EVAL_TASK,
-                DEVICE,
+                device,
                 save_dir / "compressed" / f"eval_results_{EVAL_TASK}.json"
             )
 
@@ -433,21 +465,30 @@ def main(input_backend, output_backend, compression_kwargs, save_dir, pt_dtype=t
     tokenizer.save_pretrained(save_dir)
 
     del dataset
-    del model
     del compressed_model
     gc.collect()
     torch.cuda.empty_cache()
 
-    # Make a demo generation
-    do_sample_generation(str(save_dir), output_backend)
+    if do_sample_generation:
+        # Make a demo generation
+        run_sample_generation(model_id, str(save_dir), output_backend, device, backup_device)
+        torch.cuda.empty_cache()
+        gc.collect()
 
     # Run evaluation
-    run_lm_eval(str(save_dir), output_backend, EVAL_TASK, DEVICE, save_dir / f"eval_results_{EVAL_TASK}.json")
+    run_lm_eval(model_id, str(save_dir), output_backend, EVAL_TASK, device, save_dir / f"eval_results_{EVAL_TASK}.json")
+    torch.cuda.empty_cache()
+    gc.collect()
 
 
-if __name__ == "__main__":
-    parent_save_dir = "torch_compress" / Path(MODEL_ID.split("/")[1])
-    # parent_save_dir = "torch_compress" / Path("tmp")
+def backend_comparison(log_dir):
+    MODEL_ID = "microsoft/Phi-4-mini-instruct"
+    # MODEL_ID = "meta-llama/Llama-3.2-1B"
+    # MODEL_ID = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+    # MODEL_ID = "facebook/opt-125m"
+    # MODEL_ID = "HuggingFaceH4/tiny-random-LlamaForCausalLM"
+
+    parent_save_dir = Path(log_dir) / MODEL_ID.split("/")[1]
     save_subdir = "int4_asym_awq_se_bs8_att2"
     compression_kwargs = dict(
         mode=nncf.CompressWeightsMode.INT4_ASYM,
@@ -460,21 +501,99 @@ if __name__ == "__main__":
     )
 
     try:
-        main(ModelBacked.OV, ModelBacked.OV, compression_kwargs, parent_save_dir / save_subdir / "ov")
+        main(MODEL_ID, ModelBacked.OV, ModelBacked.OV, compression_kwargs, parent_save_dir / save_subdir / "ov", DEVICE)
     except Exception as e:
         print(f"OV-OV case failed: {e}")
 
     try:
-        main(ModelBacked.PT, ModelBacked.OV, compression_kwargs, parent_save_dir / save_subdir / "pt_ov")
+        main(MODEL_ID, ModelBacked.PT, ModelBacked.OV, compression_kwargs, parent_save_dir / save_subdir / "pt_ov", DEVICE)
     except Exception as e:
         print(f"PT-OV case failed: {e}")
 
     try:
-        main(ModelBacked.PT, ModelBacked.PT, compression_kwargs, parent_save_dir / save_subdir / "pt_pt_fp32", torch.float32, export_compressed=True)
+        main(MODEL_ID, ModelBacked.PT, ModelBacked.PT, compression_kwargs, parent_save_dir / save_subdir / "pt_pt_fp32", DEVICE,
+             torch.float32, export_compressed=True)
     except Exception as e:
         print(f"PT-PT FP32 case failed: {e}")
 
     try:
-        main(ModelBacked.PT, ModelBacked.PT, compression_kwargs, parent_save_dir / save_subdir / "pt_pt_bf16", torch.bfloat16, export_compressed=True)
+        main(MODEL_ID, ModelBacked.PT, ModelBacked.PT, compression_kwargs, parent_save_dir / save_subdir / "pt_pt_bf16", DEVICE,
+             torch.bfloat16, export_compressed=True)
     except Exception as e:
         print(f"PT-PT BF16 case failed: {e}")
+
+
+def run_on_scope(log_dir):
+    compression_configs = [
+        (
+            dict(
+                mode=nncf.CompressWeightsMode.INT4_ASYM,
+                group_size=64,
+            ),
+            "data-free",
+        ),
+        (
+            dict(
+                mode=nncf.CompressWeightsMode.INT4_ASYM,
+                group_size=64,
+                awq=True,
+                advanced_parameters=nncf.AdvancedCompressionParameters(awq_params=nncf.AdvancedAWQParameters(prefer_data_aware_scaling=False))
+            ),
+            "awq-data-free"
+        ),
+        (
+            dict(
+                mode=nncf.CompressWeightsMode.INT4_ASYM,
+                group_size=64,
+                awq=True,
+                advanced_parameters=nncf.AdvancedCompressionParameters(awq_params=nncf.AdvancedAWQParameters(prefer_data_aware_scaling=True))
+            ),
+            "awq-data-aware"
+        ),
+    ]
+
+    model_ids = reversed([
+        "meta-llama/Llama-3.2-3B-Instruct",
+        "microsoft/Phi-3-mini-4k-instruct",
+        "meta-llama/Meta-Llama-3-8B",
+        "meta-llama/Meta-Llama-3-8B-Instruct",
+        "meta-llama/Llama-3.1-8B-Instruct",
+        "microsoft/Phi-3-medium-4k-instruct",
+    ])
+
+    for model_id in model_ids:
+        for compression_kwargs, label in compression_configs:
+            save_dir = Path(log_dir) / model_id.split("/")[1] / label
+            main(
+                model_id,
+                ModelBacked.PT,
+                ModelBacked.PT,
+                compression_kwargs,
+                save_dir,
+                DEVICE,
+                torch.bfloat16,
+                backup_device="cpu",
+                do_sample_generation=False,
+            )
+
+
+def extract_acc(log_dir, metric):
+    assert metric in ["wikitext", "mmlu"]
+    for path in sorted(Path(log_dir).rglob(f"eval_results_{metric}.json")):
+        with open(path, "r") as f:
+            data = json.load(f)["results"][metric]
+        if metric == "wikitext":
+            key = "word_perplexity,none"
+        elif metric == "mmlu":
+            key = "acc,none"
+        else:
+            raise ValueError(f"Unknown metric: {metric}")
+
+        acc = data[key]
+        print(f"Model: {path.parent}", " " * (100 - len(str(path.parent))), f"{metric} {key}: {acc:.4f}")
+
+
+if __name__ == "__main__":
+    # backend_comparison("torch_compress")
+    # run_on_scope("torch_compress/awq_att3")
+    extract_acc("torch_compress/awq_att3", "wikitext")
