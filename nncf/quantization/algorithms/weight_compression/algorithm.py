@@ -293,6 +293,7 @@ class WeightCompression(Algorithm):
         criterion_cls = MIXED_PRECISION_CRITERIA.get(self._sensitivity_metric)
         self._mixed_precision_algo = criterion_cls(primary_config, self._ratio, self._subset_size)
         self._statistics_path = self._advanced_parameters.statistics_path
+        self._group_size_mapping = self._advanced_parameters.group_size_mapping
 
         if self._awq:
             awq_params = self._advanced_parameters.awq_params
@@ -441,11 +442,18 @@ class WeightCompression(Algorithm):
         :param graph: The model graph associated with the model.
         :param statistics_points: Statistics points.
         """
-        primary_config = WeightCompressionConfig(mode=self._mode, group_size=self._group_size)
-        if self._ratio == 1:
+        if len(self._group_size_mapping) > 0:
+            # If group_size_mapping is provided, use it to set the group size for each weight parameter
+            for weight_param in ratio_defining_params:
+                group_size = self._group_size_mapping.get(weight_param.node_with_weight.node_name, self._group_size)
+                weight_param.compression_config = WeightCompressionConfig(
+                    mode=self._mode, group_size=group_size
+                )
+        elif self._ratio == 1:
+            primary_config = WeightCompressionConfig(mode=self._mode, group_size=self._group_size)
             for weight_param in ratio_defining_params:
                 weight_param.compression_config = primary_config
-        else:
+        elif len(self._group_size_mapping) == 0:
             self._mixed_precision_algo.apply(model, graph, statistics_points, weight_params=ratio_defining_params)
 
     @staticmethod
