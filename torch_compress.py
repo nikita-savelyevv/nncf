@@ -17,10 +17,11 @@ from functools import wraps
 from pathlib import Path
 from typing import Union, Type, Optional, Any
 from weakref import WeakKeyDictionary
-
+import nncf
 import torch
 import transformers
 from lm_eval.models.utils import get_dtype
+from lm_eval.tasks import TaskManager
 from optimum.exporters.openvino.convert import export_from_model
 from optimum.intel.openvino import OVModelForCausalLM
 from torch import nn
@@ -48,9 +49,8 @@ from nncf.torch.utils import is_multidevice
 
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-EVAL_TASK = "wikitext"
-# EVAL_TASK = "mmlu"
-EVAL_BATCH_SIZE = 16 if EVAL_TASK == "mmlu" else 1
+# EVAL_TASK = "wikitext"
+EVAL_TASK = "mmlu"
 NNCF_CONFIG_FILENAME = "nncf_config.json"
 print(f"Using device: {DEVICE}")
 
@@ -352,7 +352,8 @@ def run_lm_eval(
     model_id,
     model: Union[str, PreTrainedModel],
     backend: ModelBacked,
-    task: str, device: str,
+    task: str,
+    device: str,
     save_file_path: Path,
     limit=None
 ):
@@ -361,11 +362,18 @@ def run_lm_eval(
     if backend == ModelBacked.OV:
         model = OVModelForCausalLM.from_pretrained(model)
 
+    task_manager = None
+    if task == "wikitext_validation":
+        task_manager = TaskManager(
+            include_path=str(Path(__file__).resolve().parent / "examples/llm_compression/torch/qat_with_lora" / "custom_eval_tasks")
+        )
+
+    batch_size = 16 if task == "mmlu" else 1
     with torch.no_grad():
         lm_eval_model = NNCFHFLM(
             model,
             tokenizer=tokenizer,
-            batch_size=EVAL_BATCH_SIZE,
+            batch_size=batch_size,
             device=device,
             parallelize=True and isinstance(model, str),
             max_length=4096,
@@ -375,9 +383,10 @@ def run_lm_eval(
             model=lm_eval_model,
             tasks=[task],
             num_fewshot=0,
-            batch_size=EVAL_BATCH_SIZE,
+            batch_size=batch_size,
             limit=limit,
             device=device,
+            task_manager=task_manager,
         )
         end_time = time.perf_counter()
     print(f"Evaluation time: {end_time - start_time:.2f} seconds")
@@ -386,6 +395,7 @@ def run_lm_eval(
     save_file_path.parent.mkdir(exist_ok=True, parents=True)
     with open(save_file_path, "w") as f:
         json.dump(results, f, indent=4)
+    extract_acc(save_file_path.parent, task)
     return results
 
 
@@ -395,12 +405,16 @@ def main(
     output_backend,
     compression_kwargs,
     save_dir,
-    device,
+    eval_task,
+    device=None,
     pt_dtype=torch.float32,
     export_compressed=False,
     backup_device=None,
     do_sample_generation=True,
+    cleanup_model_files=False,
 ):
+    device = device or DEVICE
+
     # Create model
     if input_backend == ModelBacked.PT:
         model_cls = NNCFModelForCausalLM if output_backend == ModelBacked.PT else AutoModelForCausalLM
@@ -444,9 +458,9 @@ def main(
                 model_id,
                 compressed_model,
                 ModelBacked.PT,
-                EVAL_TASK,
+                eval_task,
                 device,
-                save_dir / "compressed" / f"eval_results_{EVAL_TASK}.json"
+                save_dir / "compressed" / f"eval_results_{eval_task}.json"
             )
 
         save_dir = save_dir / "decompressed"
@@ -476,9 +490,16 @@ def main(
         gc.collect()
 
     # Run evaluation
-    run_lm_eval(model_id, str(save_dir), output_backend, EVAL_TASK, device, save_dir / f"eval_results_{EVAL_TASK}.json")
+    run_lm_eval(model_id, str(save_dir), output_backend, eval_task, device, save_dir / f"eval_results_{eval_task}.json")
     torch.cuda.empty_cache()
     gc.collect()
+
+    if cleanup_model_files:
+        # Remove files with ".bin" or ".safetensors" extensions
+        for file in save_dir.rglob("*"):
+            if file.suffix in [".bin", ".safetensors"]:
+                print(f"Removing file: {file}")
+                file.unlink()
 
 
 def backend_comparison(log_dir):
@@ -501,23 +522,23 @@ def backend_comparison(log_dir):
     )
 
     try:
-        main(MODEL_ID, ModelBacked.OV, ModelBacked.OV, compression_kwargs, parent_save_dir / save_subdir / "ov", DEVICE)
+        main(MODEL_ID, ModelBacked.OV, ModelBacked.OV, compression_kwargs, parent_save_dir / save_subdir / "ov", EVAL_TASK, DEVICE)
     except Exception as e:
         print(f"OV-OV case failed: {e}")
 
     try:
-        main(MODEL_ID, ModelBacked.PT, ModelBacked.OV, compression_kwargs, parent_save_dir / save_subdir / "pt_ov", DEVICE)
+        main(MODEL_ID, ModelBacked.PT, ModelBacked.OV, compression_kwargs, parent_save_dir / save_subdir / "pt_ov", EVAL_TASK, DEVICE)
     except Exception as e:
         print(f"PT-OV case failed: {e}")
 
     try:
-        main(MODEL_ID, ModelBacked.PT, ModelBacked.PT, compression_kwargs, parent_save_dir / save_subdir / "pt_pt_fp32", DEVICE,
+        main(MODEL_ID, ModelBacked.PT, ModelBacked.PT, compression_kwargs, parent_save_dir / save_subdir / "pt_pt_fp32", EVAL_TASK, DEVICE,
              torch.float32, export_compressed=True)
     except Exception as e:
         print(f"PT-PT FP32 case failed: {e}")
 
     try:
-        main(MODEL_ID, ModelBacked.PT, ModelBacked.PT, compression_kwargs, parent_save_dir / save_subdir / "pt_pt_bf16", DEVICE,
+        main(MODEL_ID, ModelBacked.PT, ModelBacked.PT, compression_kwargs, parent_save_dir / save_subdir / "pt_pt_bf16", EVAL_TASK, DEVICE,
              torch.bfloat16, export_compressed=True)
     except Exception as e:
         print(f"PT-PT BF16 case failed: {e}")
@@ -530,36 +551,35 @@ def run_on_scope(log_dir):
                 mode=nncf.CompressWeightsMode.INT4_ASYM,
                 group_size=64,
             ),
-            "data-free",
+            "gs_64",
         ),
         (
             dict(
                 mode=nncf.CompressWeightsMode.INT4_ASYM,
-                group_size=64,
-                awq=True,
-                advanced_parameters=nncf.AdvancedCompressionParameters(awq_params=nncf.AdvancedAWQParameters(prefer_data_aware_scaling=False))
+                group_size=128,
             ),
-            "awq-data-free"
+            "gs_128",
         ),
         (
             dict(
                 mode=nncf.CompressWeightsMode.INT4_ASYM,
-                group_size=64,
-                awq=True,
-                advanced_parameters=nncf.AdvancedCompressionParameters(awq_params=nncf.AdvancedAWQParameters(prefer_data_aware_scaling=True))
+                group_size=256,
             ),
-            "awq-data-aware"
+            "gs_256",
+        ),
+        (
+            dict(
+                mode=nncf.CompressWeightsMode.INT4_ASYM,
+                group_size=512,
+            ),
+            "gs_512",
         ),
     ]
 
-    model_ids = reversed([
-        "meta-llama/Llama-3.2-3B-Instruct",
-        "microsoft/Phi-3-mini-4k-instruct",
-        "meta-llama/Meta-Llama-3-8B",
-        "meta-llama/Meta-Llama-3-8B-Instruct",
+    model_ids = [
+        "microsoft/Phi-4-mini-instruct",
         "meta-llama/Llama-3.1-8B-Instruct",
-        "microsoft/Phi-3-medium-4k-instruct",
-    ])
+    ]
 
     for model_id in model_ids:
         for compression_kwargs, label in compression_configs:
@@ -570,6 +590,7 @@ def run_on_scope(log_dir):
                 ModelBacked.PT,
                 compression_kwargs,
                 save_dir,
+                EVAL_TASK,
                 DEVICE,
                 torch.bfloat16,
                 backup_device="cpu",
@@ -578,11 +599,12 @@ def run_on_scope(log_dir):
 
 
 def extract_acc(log_dir, metric):
-    assert metric in ["wikitext", "mmlu"]
+    assert metric in ["wikitext", "mmlu", "wikitext_validation"]
+    acc = None
     for path in sorted(Path(log_dir).rglob(f"eval_results_{metric}.json")):
         with open(path, "r") as f:
             data = json.load(f)["results"][metric]
-        if metric == "wikitext":
+        if metric.startswith("wikitext"):
             key = "word_perplexity,none"
         elif metric == "mmlu":
             key = "acc,none"
@@ -591,9 +613,10 @@ def extract_acc(log_dir, metric):
 
         acc = data[key]
         print(f"Model: {path.parent}", " " * (100 - len(str(path.parent))), f"{metric} {key}: {acc:.4f}")
+    return acc
 
 
 if __name__ == "__main__":
     # backend_comparison("torch_compress")
-    # run_on_scope("torch_compress/awq_att3")
-    extract_acc("torch_compress/awq_att3", "wikitext")
+    run_on_scope("torch_compress/group_size")
+    # extract_acc("torch_compress/group_size", "wikitext")
