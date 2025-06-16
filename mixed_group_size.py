@@ -110,6 +110,7 @@ def run_search(search_def: SearchDefinition):
         del loaded_report_data_copy["iterations"]
         del loaded_report_data_copy["iteration_results"]
         del loaded_report_data_copy["start_metric"]
+        del loaded_report_data_copy["start_test_metric"]
         if report_data_copy != loaded_report_data_copy:
             raise ValueError(
                 "Loaded search definition metadata does not match the current one. "
@@ -127,6 +128,7 @@ def run_search(search_def: SearchDefinition):
             start_sub_iter = 0
     else:
         report_data["start_metric"] = None
+        report_data["start_test_metric"] = None
         report_data["iterations"] = []
         report_data["iteration_results"] = []
 
@@ -141,6 +143,12 @@ def run_search(search_def: SearchDefinition):
             compression_kwargs,
             log_dir / f"start",
             search_def.metric_name
+        )
+        report_data["start_test_metric"] = run_main(
+            search_def.model_id,
+            compression_kwargs,
+            log_dir / f"start",
+            "wikitext"
         )
         save_report(log_dir, report_data)
 
@@ -188,11 +196,27 @@ def run_search(search_def: SearchDefinition):
                 best_metric = metric
                 best_node_name = node_name
 
+        # Update current best size mapping
         group_size_mapping[best_node_name] = search_def.iter_group_size
+
+        # Test validation
+        compression_kwargs = dict(
+            mode=search_def.compression_mode,
+            group_size=search_def.start_group_size,
+            advanced_parameters=nncf.AdvancedCompressionParameters(group_size_mapping=group_size_mapping)
+        )
+        test_metric = run_main(
+            search_def.model_id,
+            compression_kwargs,
+            log_dir / f"iter_{i:04}/{j:04}",
+            "wikitext"
+        )
+
         report_data["iteration_results"].append(
             {
                 "best_metric": best_metric,
                 "best_node_name": best_node_name,
+                "test_metric": test_metric,
             }
         )
         save_report(log_dir, report_data)
@@ -225,8 +249,7 @@ if __name__ == "__main__":
     log_dir = Path("group_size_search")
     model_ids = [
         "meta-llama/Llama-3.2-1B-Instruct",
-        # "microsoft/Phi-4-mini-instruct",
-        # "meta-llama/Llama-3.1-8B-Instruct",
+        "microsoft/Phi-4-mini-instruct",
     ]
     for model_id in model_ids:
         main_search(
@@ -244,8 +267,33 @@ if __name__ == "__main__":
             log_dir / "64_256_0.25",
             model_id,
             metric_name,
-            "int4_asym",
+            nncf.CompressWeightsMode.INT4_ASYM,
             start_group_size=64,
             iter_group_size=256,
             search_ratio=0.25,
+        )
+
+    model_ids = [
+        "meta-llama/Llama-3.1-8B-Instruct",
+    ]
+    for model_id in model_ids:
+        main_search(
+            log_dir / "256_64_0.1",
+            model_id,
+            metric_name,
+            nncf.CompressWeightsMode.INT4_ASYM,
+            start_group_size=256,
+            iter_group_size=64,
+            search_ratio=0.1,
+        )
+
+    for model_id in model_ids:
+        main_search(
+            log_dir / "64_256_0.1",
+            model_id,
+            metric_name,
+            nncf.CompressWeightsMode.INT4_ASYM,
+            start_group_size=64,
+            iter_group_size=256,
+            search_ratio=0.1,
         )
