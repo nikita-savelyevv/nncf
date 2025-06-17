@@ -121,7 +121,10 @@ def run_search(search_def: SearchDefinition):
         start_iter = len(loaded_report_data["iterations"]) - 1
         if start_iter != -1:
             start_sub_iter = len(loaded_report_data["iterations"][start_iter])
-            if start_sub_iter == len(matmul_node_names):
+            if (
+                start_sub_iter == len(matmul_node_names) and
+                len(loaded_report_data["iterations"]) == len(loaded_report_data["iteration_results"])
+            ):
                 start_iter += 1
                 start_sub_iter = 0
         else:
@@ -248,19 +251,19 @@ if __name__ == "__main__":
     metric_name = "wikitext_validation"
     log_dir = Path("group_size_search")
     model_ids = [
-        "meta-llama/Llama-3.2-1B-Instruct",
+        # "meta-llama/Llama-3.2-1B-Instruct",
         "microsoft/Phi-4-mini-instruct",
     ]
-    for model_id in model_ids:
-        main_search(
-            log_dir / "256_64_0.25",
-            model_id,
-            metric_name,
-            nncf.CompressWeightsMode.INT4_ASYM,
-            start_group_size=256,
-            iter_group_size=64,
-            search_ratio=0.25,
-        )
+    # for model_id in model_ids:
+    #     main_search(
+    #         log_dir / "256_64_0.25",
+    #         model_id,
+    #         metric_name,
+    #         nncf.CompressWeightsMode.INT4_ASYM,
+    #         start_group_size=256,
+    #         iter_group_size=64,
+    #         search_ratio=0.25,
+    #     )
 
     for model_id in model_ids:
         main_search(
