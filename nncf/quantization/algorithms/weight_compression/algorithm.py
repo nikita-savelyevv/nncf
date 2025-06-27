@@ -35,6 +35,7 @@ from nncf.parameters import CompressionFormat
 from nncf.parameters import CompressWeightsMode
 from nncf.parameters import SensitivityMetric
 from nncf.quantization.advanced_parameters import AdvancedCompressionParameters
+from nncf.quantization.advanced_parameters import AdvancedGroupSizeParameters
 from nncf.quantization.advanced_parameters import convert_to_dict_recursively
 from nncf.quantization.algorithms.algorithm import Algorithm
 from nncf.quantization.algorithms.weight_compression.awq import AWQ
@@ -296,10 +297,14 @@ class WeightCompression(Algorithm):
 
         primary_config = WeightCompressionConfig(mode=self._mode, group_size=self._group_size)
         criterion_cls = MIXED_PRECISION_CRITERIA.get(self._sensitivity_metric)
-        self._mixed_precision_algo = criterion_cls(
-            primary_config, self._ratio, self._subset_size, self._advanced_parameters.group_size_params
-        )
+        self._mixed_precision_algo = criterion_cls(primary_config, self._ratio, self._subset_size)
         self._statistics_path = self._advanced_parameters.statistics_path
+
+        group_size_parameters = self._advanced_parameters.group_size_params
+        if group_size_parameters is None:
+            group_size_parameters = AdvancedGroupSizeParameters()
+        self._enable_flexible_group_size = group_size_parameters.enable_flexible_group_size
+        self._min_flexible_group_size = group_size_parameters.min_flexible_group_size
 
         if self._awq:
             awq_params = self._advanced_parameters.awq_params
@@ -448,7 +453,36 @@ class WeightCompression(Algorithm):
         :param graph: The model graph associated with the model.
         :param statistics_points: Statistics points.
         """
-        self._mixed_precision_algo.apply(model, graph, statistics_points, weight_params=ratio_defining_params)
+        primary_config = WeightCompressionConfig(mode=self._mode, group_size=self._group_size)
+
+        # Compute flexible group size values if enabled
+        flexible_group_size_values = {}
+        valid_ratio_defining_params = ratio_defining_params
+        if self._enable_flexible_group_size and primary_config.group_size != -1:
+            group_size_data = self._get_flexible_group_size_data(ratio_defining_params, primary_config.group_size)
+            flexible_group_size_values = {w_param.weight_name: group_size for w_param, group_size in group_size_data}
+            valid_ratio_defining_params = [w_param for w_param, _ in group_size_data]
+
+        if self._ratio == 1:
+            for weight_param in valid_ratio_defining_params:
+                weight_param.compression_config = primary_config
+        else:
+            self._mixed_precision_algo.apply(
+                model,
+                graph,
+                statistics_points,
+                weight_params=ratio_defining_params,
+                weight_params_valid_for_primary_precision=valid_ratio_defining_params,
+            )
+
+        if self._enable_flexible_group_size and primary_config.group_size != -1:
+            # Set flexible group size values
+            for weight_param in valid_ratio_defining_params:
+                if weight_param.compression_config.mode == primary_config.mode:
+                    group_size = flexible_group_size_values.get(weight_param.weight_name, self._group_size)
+                    weight_param.compression_config = WeightCompressionConfig(
+                        mode=primary_config.mode, group_size=group_size
+                    )
 
         # Check if group size is valid for each weight in ratio_defining_params
         failed_nodes = []
@@ -468,6 +502,58 @@ class WeightCompression(Algorithm):
                 f"nncf.compress_weight(\n\t..., \n\tignored_scope=IgnoredScope(names=[{names}]\n\t)\n)"
             )
             raise nncf.InvalidGroupSizeError(msg)
+
+    def _get_flexible_group_size_data(
+        self, weight_params: list[WeightCompressionParameters], primary_group_size: int
+    ) -> list[tuple[WeightCompressionParameters, int]]:
+        flexible_group_size_not_found_weight_params = []
+        group_size_data = []
+        for w_params in weight_params:
+            reduction_channel_size, _ = get_reduction_channel_size(w_params.weight_shape, w_params.reduction_axes)
+            if reduction_channel_size % primary_group_size == 0:
+                # The weight can be compressed with the given group size, nothing else to do
+                group_size_data.append((w_params, primary_group_size))
+                continue
+
+            # Find the maximal power of two that divides reduction_channel_size
+            new_group_size = 2
+            while reduction_channel_size % new_group_size == 0 and new_group_size < primary_group_size:
+                new_group_size *= 2
+            new_group_size //= 2
+
+            if new_group_size < self._min_flexible_group_size:
+                flexible_group_size_not_found_weight_params.append(w_params)
+            else:
+                group_size_data.append((w_params, new_group_size))
+
+        node_strings = []
+        for i, (w_params, new_group_size) in enumerate(group_size_data):
+            if new_group_size == primary_group_size:
+                continue
+            weight_shape = w_params.weight_shape
+            reduction_channel_size, _ = get_reduction_channel_size(weight_shape, w_params.reduction_axes)
+            node_strings.append(
+                f"{w_params.node_with_weight.node_name} "
+                f"(weight shape: {weight_shape}, adjusted group size: {new_group_size})"
+            )
+        if len(node_strings) > 0:
+            nncf_logger.info(
+                f"Wasn't able to set the specified group size value ({primary_group_size}) to some nodes. These nodes "
+                f"will have an adjusted group size value:\n\t" + "\n\t".join(node_strings)
+            )
+
+        if len(flexible_group_size_not_found_weight_params) > 0:
+            node_strings = [""] * len(flexible_group_size_not_found_weight_params)
+            for i, w_params in enumerate(flexible_group_size_not_found_weight_params):
+                weight_shape = w_params.weight_shape
+                reduction_channel_size, _ = get_reduction_channel_size(weight_shape, w_params.reduction_axes)
+                node_strings[i] = f"{w_params.node_with_weight.node_name} (weight shape: {weight_shape})"
+            nncf_logger.warning(
+                "Large enough flexible group size value cannot be found for some nodes. They will be compressed to the "
+                "backup mode. Nodes:\n\t" + "\n\t".join(node_strings)
+            )
+
+        return group_size_data
 
     @staticmethod
     def _proportion_str(num_weights_list: list[int], total_num_weights: int, total_num_params: int) -> str:
