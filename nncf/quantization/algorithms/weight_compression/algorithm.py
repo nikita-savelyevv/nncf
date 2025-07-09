@@ -453,7 +453,7 @@ class WeightCompression(Algorithm):
             primary_config = WeightCompressionConfig(mode=self._mode, group_size=self._group_size)
             for weight_param in ratio_defining_params:
                 weight_param.compression_config = primary_config
-        elif len(self._group_size_mapping) == 0:
+        else:
             self._mixed_precision_algo.apply(model, graph, statistics_points, weight_params=ratio_defining_params)
 
     @staticmethod

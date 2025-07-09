@@ -49,8 +49,8 @@ from nncf.torch.utils import is_multidevice
 
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-# EVAL_TASK = "wikitext"
-EVAL_TASK = "mmlu"
+EVAL_TASK = "wikitext"
+# EVAL_TASK = "mmlu"
 NNCF_CONFIG_FILENAME = "nncf_config.json"
 print(f"Using device: {DEVICE}")
 
@@ -68,9 +68,10 @@ def print_gpu_memory():
 class NNCFModelForCausalLM(PreTrainedModel):
     def save_pretrained(self, save_directory, *args, **kwargs):
         super().save_pretrained(save_directory, *args, **kwargs)
-        with open(save_directory / Path(NNCF_CONFIG_FILENAME), "w") as f:
-            nncf_config = self.get_nncf_config()
-            json.dump(nncf_config, f, indent=4)
+        nncf_config = self.get_nncf_config()
+        if nncf_config is not None:
+            with open(save_directory / Path(NNCF_CONFIG_FILENAME), "w") as f:
+                json.dump(nncf_config, f, indent=4)
 
     @classmethod
     def from_pretrained(
@@ -154,6 +155,8 @@ class NNCFModelForCausalLM(PreTrainedModel):
         from nncf.torch.layer_utils import StatefulModuleInterface
         from nncf.torch.function_hook.serialization import COMPRESSION_STATE_ATTR
 
+        if not hasattr(self, ATR_HOOK_STORAGE):
+            return None
         hook_storage = get_hook_storage(self)
 
         # Find shared modules
@@ -439,7 +442,10 @@ def main(
 
     # Compress model
     start_time = time.perf_counter()
-    compressed_model = compress_model(model, dataset, compression_kwargs)
+    if compression_kwargs is not None:
+        compressed_model = compress_model(model, dataset, compression_kwargs)
+    else:
+        compressed_model = model
     print("Compression time: ", time.perf_counter() - start_time)
 
     del model
@@ -495,9 +501,13 @@ def main(
     gc.collect()
 
     if cleanup_model_files:
-        # Remove files with ".bin" or ".safetensors" extensions
+        # Remove files with ".bin" and ".safetensors" extensions, and other config files
+        useless_configs = [
+            "tokenizer.json", "tokenizer_config.json", "generation_config.json", "special_tokens_map.json",
+            "model.safetensors.index.json", "vocab.json", "merges.txt", "added_tokens.json",
+        ]
         for file in save_dir.rglob("*"):
-            if file.suffix in [".bin", ".safetensors"]:
+            if file.suffix in [".bin", ".safetensors"] or file.name in useless_configs:
                 print(f"Removing file: {file}")
                 file.unlink()
 
@@ -544,57 +554,64 @@ def backend_comparison(log_dir):
         print(f"PT-PT BF16 case failed: {e}")
 
 
-def run_on_scope(log_dir):
+def run_on_scope(log_dir, backend: ModelBacked):
     compression_configs = [
         (
-            dict(
-                mode=nncf.CompressWeightsMode.INT4_ASYM,
-                group_size=64,
-            ),
-            "gs_64",
+            None,
+            "bf16",
         ),
         (
             dict(
-                mode=nncf.CompressWeightsMode.INT4_ASYM,
-                group_size=128,
+                mode=nncf.CompressWeightsMode.INT8_ASYM,
             ),
-            "gs_128",
+            "int8",
         ),
-        (
-            dict(
-                mode=nncf.CompressWeightsMode.INT4_ASYM,
-                group_size=256,
-            ),
-            "gs_256",
-        ),
-        (
-            dict(
-                mode=nncf.CompressWeightsMode.INT4_ASYM,
-                group_size=512,
-            ),
-            "gs_512",
-        ),
+        # (
+        #     dict(
+        #         mode=nncf.CompressWeightsMode.INT4_ASYM,
+        #         group_size=64,
+        #     ),
+        #     "gs_64",
+        # ),
+        # (
+        #     dict(
+        #         mode=nncf.CompressWeightsMode.INT4_ASYM,
+        #         group_size=128,
+        #     ),
+        #     "gs_128",
+        # ),
+        # (
+        #     dict(
+        #         mode=nncf.CompressWeightsMode.INT4_ASYM,
+        #         group_size=256,
+        #     ),
+        #     "gs_256",
+        # ),
     ]
 
     model_ids = [
+        "meta-llama/Llama-3.2-1B-Instruct",
         "microsoft/Phi-4-mini-instruct",
-        "meta-llama/Llama-3.1-8B-Instruct",
+        # "meta-llama/Llama-3.1-8B-Instruct",
     ]
 
     for model_id in model_ids:
         for compression_kwargs, label in compression_configs:
             save_dir = Path(log_dir) / model_id.split("/")[1] / label
+            kwargs = {}
+            if backend == ModelBacked.PT:
+                kwargs["pt_dtype"] = torch.bfloat16
             main(
                 model_id,
-                ModelBacked.PT,
-                ModelBacked.PT,
+                backend,
+                backend,
                 compression_kwargs,
                 save_dir,
                 EVAL_TASK,
                 DEVICE,
-                torch.bfloat16,
                 backup_device="cpu",
                 do_sample_generation=False,
+                **kwargs
             )
 
 
@@ -618,5 +635,25 @@ def extract_acc(log_dir, metric):
 
 if __name__ == "__main__":
     # backend_comparison("torch_compress")
-    run_on_scope("torch_compress/group_size")
+    # run_on_scope("group_size_search/baseline/torch", ModelBacked.PT)
+    # run_on_scope("group_size_search/baseline/openvino", ModelBacked.OV)
     # extract_acc("torch_compress/group_size", "wikitext")
+
+    for model_id, save_dir in [
+        # ("meta-llama/Llama-3.2-1B-Instruct", "group_size_search/64_256_0.25/Llama-3.2-1B-Instruct/final_compressed_model/torch/decompressed"),
+        # ("microsoft/Phi-4-mini-instruct", "group_size_search/64_256_0.25/Phi-4-mini-instruct/final_compressed_model/torch/decompressed"),
+        # ("meta-llama/Llama-3.2-1B-Instruct", "group_size_search/256_64_0.25/Llama-3.2-1B-Instruct/final_compressed_model/torch/decompressed"),
+        # ("microsoft/Phi-4-mini-instruct", "group_size_search/256_64_0.25/Phi-4-mini-instruct/final_compressed_model/torch/decompressed"),
+        # ("meta-llama/Llama-3.2-1B-Instruct", "group_size_search/baseline/torch/Llama-3.2-1B-Instruct/bf16/decompressed"),
+        # ("meta-llama/Llama-3.2-1B-Instruct", "group_size_search/baseline/torch/Llama-3.2-1B-Instruct/int8/decompressed"),
+        # ("meta-llama/Llama-3.2-1B-Instruct", "group_size_search/baseline/torch/Llama-3.2-1B-Instruct/gs_64/decompressed"),
+        # ("meta-llama/Llama-3.2-1B-Instruct", "group_size_search/baseline/torch/Llama-3.2-1B-Instruct/gs_128/decompressed"),
+        # ("meta-llama/Llama-3.2-1B-Instruct", "group_size_search/baseline/torch/Llama-3.2-1B-Instruct/gs_256/decompressed"),
+        ("microsoft/Phi-4-mini-instruct", "group_size_search/baseline/torch/Phi-4-mini-instruct/bf16/decompressed"),
+        ("microsoft/Phi-4-mini-instruct", "group_size_search/baseline/torch/Phi-4-mini-instruct/int8/decompressed"),
+        ("microsoft/Phi-4-mini-instruct", "group_size_search/baseline/torch/Phi-4-mini-instruct/gs_64/decompressed"),
+        ("microsoft/Phi-4-mini-instruct", "group_size_search/baseline/torch/Phi-4-mini-instruct/gs_128/decompressed"),
+        ("microsoft/Phi-4-mini-instruct", "group_size_search/baseline/torch/Phi-4-mini-instruct/gs_256/decompressed"),
+    ]:
+        task = "mmlu"
+        run_lm_eval(model_id, save_dir, ModelBacked.PT, task, "cuda", Path(save_dir) / f"eval_results_{task}.json")
