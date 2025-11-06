@@ -503,7 +503,7 @@ class WeightCompression(Algorithm):
 
         return ratio_defining_params
 
-    def _get_backup_config(self, weight_dtype: TensorDataType) -> WeightCompressionConfig:
+    def _get_backup_config(self, weight_dtype: TensorDataType) -> Optional[WeightCompressionConfig]:
         """
         Returns the backup weight compression configuration based on the algorithm's backup mode.
 
@@ -539,7 +539,7 @@ class WeightCompression(Algorithm):
         ratio_defining_params: list[WeightCompressionParameters],
         model: TModel,
         graph: NNCFGraph,
-        statistics_points: StatisticPointsContainer,
+        statistics_points: Optional[StatisticPointsContainer],
     ) -> None:
         """
         Sets the appropriate compression configuration for weights based on some criteria.
@@ -549,18 +549,17 @@ class WeightCompression(Algorithm):
         :param model: The model.
         :param graph: The model graph associated with the model.
         :param statistics_points: Statistics points.
-        :param group_size_values: A dictionary mapping weight names to their group size values.
         """
         if self._ratio < 1 and len(ratio_defining_params) > 0:
             primary_precision_weight_params = self._mixed_precision_algo.apply(
                 model, graph, statistics_points, weight_params=ratio_defining_params
             )
-            # ratio_defining_params are all in primary precision. Update parameters
-            # which need to be set to backup precision
+            # At this point ratio_defining_params are all in primary precision. Below we update parameters
+            # which need to be set to the backup precision.
+            primary_precision_weight_params = set(primary_precision_weight_params)
             for weight_param in ratio_defining_params:
-                if weight_param in primary_precision_weight_params:
-                    continue
-                weight_param.compression_config = self._get_backup_config(weight_param.weight_dtype)
+                if weight_param not in primary_precision_weight_params:
+                    weight_param.compression_config = self._get_backup_config(weight_param.weight_dtype)
         # Check if group size is valid for each weight in ratio_defining_params
         failed_nodes = []
         for w_params in ratio_defining_params:
@@ -806,17 +805,17 @@ class WeightCompression(Algorithm):
         self,
         model: TModel,
         graph: NNCFGraph,
-        statistic_points: StatisticPointsContainer,
+        statistic_points: Optional[StatisticPointsContainer],
         dataset: Dataset,
         ratio_defining_params: list[WeightCompressionParameters],
         all_weight_params: list[WeightCompressionParameters],
-    ) -> tuple[dict[str, WCTensorStatistic], StatisticPointsContainer]:
+    ) -> tuple[Optional[dict[str, WCTensorStatistic]], StatisticPointsContainer]:
         """
         Collects and computes statistics required for weight compression.
 
         :param model: Backend-specific model instance.
         :param graph: Corresponding NNCFGraph of the model.
-        :param Container with pre-collected statistics, if available..
+        :param statistic_points: Container with pre-collected statistics, if available..
         :param dataset: Dataset used for collecting statistics when not provided.
         :param ratio_defining_params: List of parameters defining compression ratios.
         :param all_weight_params: List of all weight compression parameters.
@@ -847,7 +846,7 @@ class WeightCompression(Algorithm):
         list[WeightCompressionParameters],
     ]:
         """
-        This Function does the following:
+        This function does the following:
 
         * Generates a list of weight compression parameters based on the algorithm configuration.
         * Determines the appropriate quantization parameters for each node eligible for weight compression.
@@ -858,10 +857,10 @@ class WeightCompression(Algorithm):
 
         :param model: Backend-specific input model.
         :param graph: NNCFGraph instance.
-        :return: A tuple consisting a list of weight compression parameters that can be compressed,
-            a list of ratio-defining parameters, which is a subset of compressible weight parameters
-            that are allowed to be set to mixed precisions, and a list of weight compression parameters
-            that can not be compressed.
+        :return: A tuple consisting of:
+            1. a list of all weight compression parameters that can be compressed,
+            2. a list of ratio-defining parameters, which can be set to either primary or backup precisions,
+            3. and a list of weight compression parameters that can not be compressed.
         """
         nodes_to_compress = self.get_nodes_to_compress(graph)
 
@@ -886,8 +885,8 @@ class WeightCompression(Algorithm):
                 weight_dtype = self._backend_entity.get_weight_dtype(node, weight_port_id, model, graph)
                 weight_shape = self._backend_entity.get_weight_shape(node, weight_port_id, graph)
                 reduction_axes = self._backend_entity.get_reduction_axes(node, weight_port_id, graph)
-                wc_config = None
 
+                wc_config = None
                 if is_target_node and self.is_weight_compression_supported(weight_dtype, self._mode):
                     if (
                         self._group_size != -1
@@ -968,7 +967,7 @@ class WeightCompression(Algorithm):
         model: TModel,
         graph: NNCFGraph,
         dataset: Dataset,
-        statistic_points: StatisticPointsContainer,
+        statistic_points: Optional[StatisticPointsContainer],
         all_weight_params: list[WeightCompressionParameters],
         ratio_defining_params: list[WeightCompressionParameters],
         skipped_weight_params: list[WeightCompressionParameters],
@@ -1001,8 +1000,8 @@ class WeightCompression(Algorithm):
             self._get_bitwidth_distribution_str(all_weight_params, ratio_defining_params, skipped_weight_params)
         )
 
-        # Filter all_weight_params and by excluding nodes that should remain in their original floating-point precision
-        all_weight_params = list(filter(lambda w_params: w_params.compression_config is not None, all_weight_params))
+        # Filter all_weight_params by excluding nodes that should remain in their original floating-point precision
+        all_weight_params = [w_params for w_params in all_weight_params if w_params.compression_config is not None]
 
         if self._awq:
             model = self.awq_algo.apply(model, graph, all_weight_params, statistics, self._backend_entity)
